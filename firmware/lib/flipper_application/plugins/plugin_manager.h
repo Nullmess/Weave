@@ -1,0 +1,43 @@
+#pragma once
+
+#include <flipper_application/flipper_application.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct PluginManager PluginManager;
+
+typedef enum {
+    PluginManagerErrorNone = 0,
+    PluginManagerErrorLoaderError,
+    PluginManagerErrorApplicationIdMismatch,
+    PluginManagerErrorAPIVersionMismatch,
+} PluginManagerError;
+
+/* Filtres application ID/version ; CompoundApiInterface pour API privées */
+
+PluginManager* plugin_manager_alloc(
+    const char* application_id,
+    uint32_t api_version,
+    const ElfApiInterface* api_interface);
+
+/**
+ * @brief Frees PluginManager
+ * @param manager PluginManager instance
+ */
+void plugin_manager_free(PluginManager* manager);
+
+PluginManagerError plugin_manager_load_single(PluginManager* manager, const char* path);
+
+PluginManagerError plugin_manager_load_all(PluginManager* manager, const char* path);
+
+uint32_t plugin_manager_get_count(PluginManager* manager);
+
+const FlipperAppPluginDescriptor* plugin_manager_get(PluginManager* manager, uint32_t index);
+
+const void* plugin_manager_get_ep(PluginManager* manager, uint32_t index);
+
+#ifdef __cplusplus
+}
+#endif

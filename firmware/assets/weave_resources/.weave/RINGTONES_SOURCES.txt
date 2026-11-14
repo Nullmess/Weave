@@ -1,0 +1,7 @@
+Weave original ringtone starter pack (36 newly generated sound cues).
+
+Optional build-time GitHub source repositories:
+https://github.com/Tonsil/flipper-music-files (GPL-3.0; source attribution to authors)
+https://github.com/neverfa11ing/FlipperMusicRTTTL (check upstream file rights)
+
+Users can add their own .tone, .fmf, .rtttl or RTTTL .txt files to /ext/.weave/ringtones/.

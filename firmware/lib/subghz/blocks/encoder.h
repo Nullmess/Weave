@@ -1,0 +1,48 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+
+#include <lib/toolbox/level_duration.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    bool is_running;
+    size_t repeat;
+    size_t front;
+    size_t size_upload;
+    LevelDuration* upload;
+
+} SubGhzProtocolBlockEncoder;
+
+typedef enum {
+    SubGhzProtocolBlockAlignBitLeft,
+    SubGhzProtocolBlockAlignBitRight,
+} SubGhzProtocolBlockAlignBit;
+
+/* Index bit depuis la gauche ; taille bornée */
+void subghz_protocol_blocks_set_bit_array(
+    bool bit_value,
+    uint8_t data_array[],
+    size_t set_index_bit,
+    size_t max_size_array);
+
+/* Index bit depuis la gauche */
+bool subghz_protocol_blocks_get_bit_array(uint8_t data_array[], size_t read_index_bit);
+
+/* Upload borné ; durée par bit et alignement configurables */
+size_t subghz_protocol_blocks_get_upload_from_bit_array(
+    uint8_t data_array[],
+    size_t count_bit_data_array,
+    LevelDuration* upload,
+    size_t max_size_upload,
+    uint32_t duration_bit,
+    SubGhzProtocolBlockAlignBit align_bit);
+
+#ifdef __cplusplus
+}
+#endif

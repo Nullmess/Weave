@@ -1,0 +1,32 @@
+#pragma once
+
+#include "event_loop.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct FuriEventLoopItem FuriEventLoopItem;
+
+typedef struct {
+    FuriEventLoopItem* item_in;
+    FuriEventLoopItem* item_out;
+} FuriEventLoopLink;
+
+void furi_event_loop_link_notify(FuriEventLoopLink* instance, FuriEventLoopEvent event);
+
+/* Contrat entre event loop et objet */
+
+typedef FuriEventLoopLink* (*FuriEventLoopContractGetLink)(FuriEventLoopObject* object);
+
+typedef bool (
+    *FuriEventLoopContractGetLevel)(FuriEventLoopObject* object, FuriEventLoopEvent event);
+
+typedef struct {
+    const FuriEventLoopContractGetLink get_link;
+    const FuriEventLoopContractGetLevel get_level;
+} FuriEventLoopContract;
+
+#ifdef __cplusplus
+}
+#endif

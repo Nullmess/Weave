@@ -1,0 +1,72 @@
+{
+  "name": "weave-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Weave USB and Bluetooth desktop companion",
+  "main": "dist-electron/main.js",
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "tsc -p electron/tsconfig.json && concurrently -k \"vite renderer --config renderer/vite.config.ts --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "vite build renderer --config renderer/vite.config.ts && tsc -p electron/tsconfig.json",
+    "pack:linux": "npm run build && electron-builder --linux dir --publish never",
+    "pack:windows": "npm run build && electron-builder --win dir --publish never",
+    "pack:macos": "npm run build && electron-builder --mac dir --publish never"
+  },
+  "dependencies": {
+    "serialport": "12.0.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "rehype-raw": "7.0.0",
+    "rehype-sanitize": "6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.16.0",
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.7",
+    "@vitejs/plugin-react": "4.7.0",
+    "concurrently": "9.2.1",
+    "cross-env": "10.0.0",
+    "electron": "37.10.3",
+    "electron-builder": "26.0.12",
+    "typescript": "5.9.2",
+    "vite": "7.3.6",
+    "wait-on": "8.0.4"
+  },
+  "build": {
+    "appId": "io.github.nullmess.weave",
+    "productName": "Weave",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "assets/build"
+    },
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "npmRebuild": true,
+    "win": {
+      "executableName": "Weave",
+      "icon": "assets/build/weave.ico"
+    },
+    "linux": {
+      "category": "Utility",
+      "executableName": "Weave",
+      "icon": "assets/build/weave.png"
+    },
+    "mac": {
+      "identity": null,
+      "executableName": "Weave",
+      "icon": "assets/build/weave.icns"
+    }
+  }
+}

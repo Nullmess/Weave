@@ -1,0 +1,5 @@
+SVG icons converted from the existing Weave Android vector resources; no new artwork created.
+The Find my Flipper map-pin is Lucide map-pin, ISC licensed: https://lucide.dev/icons/map-pin
+Other icons reuse their existing project Android vector assets.
+
+App detail icon ic_apps_size.svg, GitHub ic_link_github.svg and Ko-fi ic_settings_kofi.svg are converted from the existing Android vector assets of Weave. Ko-fi artwork derives from Simple Icons (CC0-1.0), as attributed by the source Android asset.

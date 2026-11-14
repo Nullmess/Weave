@@ -1,0 +1,79 @@
+import multiprocessing
+import os
+
+from fbt.util import (
+    FORWARDED_ENV_VARIABLES,
+    PosixPathWrapper,
+    resolve_real_dir_node,
+    single_quote,
+    tempfile_arg_esc_func,
+    wrap_tempfile,
+)
+from SCons.Platform import TempFileMunge
+
+Import("VAR_ENV")
+
+forward_os_env = {
+    # PATH système importé explicitement, SCons ne le fait pas
+    "PATH": os.environ["PATH"],
+}
+
+variables_to_forward = list(FORWARDED_ENV_VARIABLES)
+
+if proxy_env := GetOption("proxy_env"):
+    variables_to_forward.extend(proxy_env.split(","))
+
+for env_value_name in variables_to_forward:
+    if environ_value := os.environ.get(env_value_name, None):
+        forward_os_env[env_value_name] = environ_value
+
+coreenv = VAR_ENV.Clone(
+    tools=[
+        "fbt_tweaks",
+        (
+            "crosscc",
+            {
+                "toolchain_prefix": "arm-none-eabi-",
+                "versions": VAR_ENV["FBT_TOOLCHAIN_VERSIONS"],
+            },
+        ),
+        "python3",
+        "sconsmodular",
+        "sconsrecursiveglob",
+        "ccache",
+    ],
+    TEMPFILE=TempFileMunge,
+    POSIXPATH=PosixPathWrapper,
+    MAXLINELENGTH=2048,
+    PROGSUFFIX=".elf",
+    ENV=forward_os_env,
+    SINGLEQUOTEFUNC=single_quote,
+    ABSPATHGETTERFUNC=resolve_real_dir_node,
+    # Fichiers temporaires contre limite longueur commandes
+    TEMPFILEARGESCFUNC=tempfile_arg_esc_func,
+    ROOT_DIR=Dir("#"),
+    FBT_SCRIPT_DIR=Dir("#/site_scons/tools"),
+)
+
+# DIST_SUFFIX système prioritaire, utilisé par CI
+if os_suffix := os.environ.get("DIST_SUFFIX", None):
+    coreenv.Replace(
+        DIST_SUFFIX=os_suffix,
+    )
+
+
+
+SetOption("num_jobs", multiprocessing.cpu_count())
+# Caches désactivés : effets défavorables dans ce build
+# Éviter scan complet à chaque lancement
+
+
+
+SetOption("max_drift", 1)
+# Ordre aléatoire pour détecter erreurs dépendances build
+
+
+wrap_tempfile(coreenv, "LINKCOM")
+wrap_tempfile(coreenv, "ARCOM")
+
+Return("coreenv")

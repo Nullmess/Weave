@@ -1,0 +1,35 @@
+App(
+    appid="weave_apps",
+    name="Weave native applications",
+    apptype=FlipperAppType.METAPACKAGE,
+    provides=["archive", "weave_packages", "weave_settings"],
+)
+
+App(
+    appid="main_apps",
+    name="Legacy application group (not included by Weave)",
+    apptype=FlipperAppType.METAPACKAGE,
+    provides=["weave_apps"],
+)
+
+App(
+    appid="main_apps_on_start",
+    name="CLI startup",
+    apptype=FlipperAppType.METAPACKAGE,
+    provides=["cli"],
+)
+
+# Original hardware capabilities remain official firmware applications. They
+# are built from the existing sources, not third-party plugins. Weave's file
+# manager and home screen are retained; hardware apps are available as FAPs.
+App(
+    appid="weave_hardware",
+    name="Official hardware applications",
+    apptype=FlipperAppType.METAPACKAGE,
+    provides=[
+        "subghz", "nfc", "lfrfid", "infrared", "ibutton", "gpio",
+        "bad_usb", "hid_usb", "hid_ble", "u2f",
+        "radio_device_cc1101_ext",
+        "cli_subghz", "cli_nfc", "cli_rfid", "cli_ir", "cli_ikey",
+    ],
+)

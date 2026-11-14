@@ -1,0 +1,15 @@
+#pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Contrôles thread SHCI/HCI event queues, usage interne */
+
+void ble_event_thread_start(void);
+
+void ble_event_thread_stop(void);
+
+#ifdef __cplusplus
+}
+#endif

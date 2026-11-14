@@ -1,0 +1,7 @@
+ADD_SCENE(archive, root, Root)
+ADD_SCENE(archive, search, Search)
+ADD_SCENE(archive, browser, Browser)
+ADD_SCENE(archive, move, Move)
+ADD_SCENE(archive, rename, Rename)
+ADD_SCENE(archive, create, Create)
+ADD_SCENE(archive, delete, Delete)

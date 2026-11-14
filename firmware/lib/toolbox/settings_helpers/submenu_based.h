@@ -1,0 +1,59 @@
+#include <gui/modules/submenu.h>
+#include <gui/view_dispatcher.h>
+#include <gui/scene_manager.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef void (*SubmenuSettingsHelpherCallback)(void* context, uint32_t index);
+
+typedef struct {
+    const char* name;
+    uint32_t scene_id;
+} SubmenuSettingsHelperOption;
+
+typedef struct {
+    const char* app_name;
+    size_t options_cnt;
+    SubmenuSettingsHelperOption options[];
+} SubmenuSettingsHelperDescriptor;
+
+typedef struct SubmenuSettingsHelper SubmenuSettingsHelper;
+
+/**
+ * @brief Allocates a submenu-based settings helper
+ * @param descriptor settings descriptor
+ */
+SubmenuSettingsHelper*
+    submenu_settings_helpers_alloc(const SubmenuSettingsHelperDescriptor* descriptor);
+
+void submenu_settings_helpers_assign_objects(
+    SubmenuSettingsHelper* helper,
+    ViewDispatcher* view_dispatcher,
+    SceneManager* scene_manager,
+    Submenu* submenu,
+    uint32_t submenu_view_id,
+    uint32_t main_scene_id);
+
+/**
+ * @brief Frees a submenu-based settings helper
+ * @param helper helper object
+ */
+void submenu_settings_helpers_free(SubmenuSettingsHelper* helper);
+
+/* arg NULL admis ; setting fourni ouvre scène correspondante */
+
+bool submenu_settings_helpers_app_start(SubmenuSettingsHelper* helper, void* arg);
+
+void submenu_settings_helpers_scene_enter(SubmenuSettingsHelper* helper);
+
+/* true si event consommé */
+
+bool submenu_settings_helpers_scene_event(SubmenuSettingsHelper* helper, SceneManagerEvent event);
+
+void submenu_settings_helpers_scene_exit(SubmenuSettingsHelper* helper);
+
+#ifdef __cplusplus
+}
+#endif

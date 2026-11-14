@@ -1,0 +1,92 @@
+*~
+*.swp
+*.swo
+*.gdb_history
+*.old
+
+
+# LSP
+.cache
+compile_commands.json
+
+# JetBrains IDEs
+.idea/
+
+# Sublime Text
+.sublime-project.sublime-workspace
+
+# Python VirtEnvironments
+.env
+.venv
+env/
+venv/
+
+# Python Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pickle
+
+.obj/
+bindings/
+.DS_Store
+.mxproject
+Brewfile.lock.json
+
+# Kate
+.kateproject
+.kateconfig
+
+# kde
+.directory
+
+# SCons
+.sconsign.dblite
+
+
+# bundle output
+/dist
+
+# Firmware and companion build outputs
+/firmware/build/
+/build
+
+# Toolchain
+/toolchain
+
+# openocd output file
+openocd.log
+
+# PVS Studio temporary files
+.PVS-Studio/
+PVS-Studio.log
+*.PVS-Studio.*
+
+.gdbinit
+
+/firmware/fbt_options_local.py
+
+# JS packages
+node_modules/
+
+# cli_perf script output in case of errors
+/block.bin
+/return_block.bin
+
+# Companion artifacts
+.pytest_cache/
+apps/desktop/dist/
+apps/desktop/build/
+apps/desktop/*.spec
+apps/android/.gradle/
+apps/android/app/build/
+/release/
+
+# Electron/Vite generated bundles and Android wrapper caches
+apps/desktop/dist-electron/
+apps/desktop/release/
+apps/desktop/node_modules/
+
+# Local VS Code workspace (the uFBT templates remain versioned)
+/.vscode/
+/*.code-workspace

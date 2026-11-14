@@ -1,0 +1,11 @@
+App(
+    appid="weave_packages",
+    name="Weave Apps",
+    apptype=FlipperAppType.APP,
+    entry_point="weave_packages_app",
+    requires=["gui", "storage", "dialogs", "loader", "notification"],
+    cdefines=["APP_WEAVE_PACKAGES"],
+    stack_size=4 * 1024,
+    icon="I_WeaveLogo_14x14",
+    order=15,
+)

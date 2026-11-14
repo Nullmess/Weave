@@ -1,0 +1,10 @@
+App(
+    appid="weave_settings",
+    name="Weave Settings",
+    apptype=FlipperAppType.APP,
+    entry_point="weave_settings_app",
+    requires=["gui", "storage", "power", "clock_settings"],
+    stack_size=4 * 1024,
+    icon="A_FileManager_14",
+    order=20,
+)

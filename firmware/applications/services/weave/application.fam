@@ -1,0 +1,9 @@
+App(
+    appid="weave",
+    name="Weave",
+    apptype=FlipperAppType.STARTUP,
+    entry_point="weave_on_system_start",
+    requires=["cli", "storage"],
+    order=95,
+    sdk_headers=["weave.h"],
+)

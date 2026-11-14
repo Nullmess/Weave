@@ -1,0 +1,146 @@
+#pragma once
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define TOPBIT(X) (1 << ((X) - 1))
+
+typedef enum {
+    BitLibParityEven,
+    BitLibParityOdd,
+    BitLibParityAlways0,
+    BitLibParityAlways1,
+} BitLibParity;
+
+#define bit_lib_increment_index(index, length) (index = (((index) + 1) % (length)))
+
+#define bit_lib_bit_is_set(data, index) (((data) & (1 << (index))) != 0)
+
+#define bit_lib_bit_is_not_set(data, index) (((data) & (1 << (index))) == 0)
+
+void bit_lib_push_bit(uint8_t* data, size_t data_size, bool bit);
+
+void bit_lib_set_bit(uint8_t* data, size_t position, bool bit);
+
+void bit_lib_set_bits(uint8_t* data, size_t position, uint8_t byte, uint8_t length);
+
+bool bit_lib_get_bit(const uint8_t* data, size_t position);
+
+uint8_t bit_lib_get_bits(const uint8_t* data, size_t position, uint8_t length);
+
+uint16_t bit_lib_get_bits_16(const uint8_t* data, size_t position, uint8_t length);
+
+uint32_t bit_lib_get_bits_32(const uint8_t* data, size_t position, uint8_t length);
+
+uint64_t bit_lib_get_bits_64(const uint8_t* data, size_t position, uint8_t length);
+
+bool bit_lib_test_parity_32(uint32_t bits, BitLibParity parity);
+
+/* Parité par blocs parity_length depuis position initiale */
+
+bool bit_lib_test_parity(
+    const uint8_t* data,
+    size_t position,
+    uint8_t length,
+    BitLibParity parity,
+    uint8_t parity_length);
+
+/* Parité ajoutée par blocs de parity_length bits */
+
+size_t bit_lib_add_parity(
+    const uint8_t* data,
+    size_t position,
+    uint8_t* dest,
+    size_t dest_position,
+    uint8_t source_length,
+    uint8_t parity_length,
+    BitLibParity parity);
+
+/* Retirer chaque n-ième bit et décaler à gauche */
+
+size_t bit_lib_remove_bit_every_nth(uint8_t* data, size_t position, uint8_t length, uint8_t n);
+
+void bit_lib_copy_bits(
+    uint8_t* data,
+    size_t position,
+    size_t length,
+    const uint8_t* source,
+    size_t source_position);
+
+void bit_lib_reverse_bits(uint8_t* data, size_t position, uint8_t length);
+
+uint8_t bit_lib_get_bit_count(uint32_t data);
+
+void bit_lib_print_bits(const uint8_t* data, size_t length);
+
+typedef struct {
+    const char mark;
+    const size_t start;
+    const size_t length;
+} BitLibRegion;
+
+/* Régions triées par position initiale requises */
+
+void bit_lib_print_regions(
+    const BitLibRegion* regions,
+    size_t region_count,
+    const uint8_t* data,
+    size_t length);
+
+/* Inversion uint16_t plus rapide que version générique */
+
+uint16_t bit_lib_reverse_16_fast(uint16_t data);
+
+/* Reverse uint8 plus rapide que variante générique */
+
+uint8_t bit_lib_reverse_8_fast(uint8_t byte);
+
+/* CRC8 : ref_in LSB ancien, ref_out inverse, XOR final */
+
+uint16_t bit_lib_crc8(
+    uint8_t const* data,
+    size_t data_size,
+    uint8_t polynom,
+    uint8_t init,
+    bool ref_in,
+    bool ref_out,
+    uint8_t xor_out);
+
+/* CRC16 : ref_in LSB ancien, ref_out inverse, XOR final */
+
+uint16_t bit_lib_crc16(
+    uint8_t const* data,
+    size_t data_size,
+    uint16_t polynom,
+    uint16_t init,
+    bool ref_in,
+    bool ref_out,
+    uint16_t xor_out);
+
+/* Conversion big endian, len octets maximum */
+
+void bit_lib_num_to_bytes_be(uint64_t src, uint8_t len, uint8_t* dest);
+
+/* Conversion little endian, len octets maximum */
+
+void bit_lib_num_to_bytes_le(uint64_t src, uint8_t len, uint8_t* dest);
+
+/* Octets big endian vers uint64, len maximum */
+
+uint64_t bit_lib_bytes_to_num_be(const uint8_t* src, uint8_t len);
+
+/* Octets little endian vers uint64, len maximum */
+
+uint64_t bit_lib_bytes_to_num_le(const uint8_t* src, uint8_t len);
+
+/* BCD valide si tous nibbles 0..9 ; résultat dans is_bcd */
+
+uint64_t bit_lib_bytes_to_num_bcd(const uint8_t* src, uint8_t len, bool* is_bcd);
+
+#ifdef __cplusplus
+}
+#endif

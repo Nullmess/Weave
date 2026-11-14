@@ -1,0 +1,1630 @@
+/**************************************************************************//**
+ * @file     core_cm4.h
+ * @brief    CMSIS Cortex-M4 Core Peripheral Access Layer Header File
+ * @version  V5.2.0
+ * @date     04. April 2023
+ ******************************************************************************/
+/*
+ * Copyright (c) 2009-2023 Arm Limited. All rights reserved.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the License); you may
+ * not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an AS IS BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#if   defined ( __ICCARM__ )
+  #pragma system_include         /* Header système pour vérification MISRA */
+#elif defined (__clang__)
+  #pragma clang system_header   /* Header système */
+#endif
+
+#ifndef __CORE_CM4_H_GENERIC
+#define __CORE_CM4_H_GENERIC
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+ extern "C" {
+#endif
+
+/* Écarts MISRA-C:2004 : 8.5 inline, 18.4 unions, 19.7 macros */
+
+#include "cmsis_version.h"
+
+#define __CM4_CMSIS_VERSION_MAIN  (__CM_CMSIS_VERSION_MAIN)              /* Obsolète : version majeure [31:16] */
+#define __CM4_CMSIS_VERSION_SUB   (__CM_CMSIS_VERSION_SUB)               /* Obsolète : version mineure [15:0] */
+#define __CM4_CMSIS_VERSION       ((__CM4_CMSIS_VERSION_MAIN << 16U) | \
+                                    __CM4_CMSIS_VERSION_SUB           )  /* Version CMSIS HAL obsolète */
+
+#define __CORTEX_M                (4U)
+
+/* Vérifier __FPU_PRESENT avant accès aux registres FPU */
+#if defined ( __CC_ARM )
+  #if defined __TARGET_FPU_VFP
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #error "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#elif defined (__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+  #if defined __ARM_FP
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #warning "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#elif defined (__ti__)
+  #if defined (__ARM_FP)
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #warning "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#elif defined ( __GNUC__ )
+  #if defined (__VFP_FP__) && !defined(__SOFTFP__)
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #error "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#elif defined ( __ICCARM__ )
+  #if defined __ARMVFP__
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #error "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#elif defined ( __TI_ARM__ )
+  #if defined __TI_VFP_SUPPORT__
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #error "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#elif defined ( __TASKING__ )
+  #if defined __FPU_VFP__
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #error "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#elif defined ( __CSMC__ )
+  #if ( __CSMC__ & 0x400U)
+    #if defined (__FPU_PRESENT) && (__FPU_PRESENT == 1U)
+      #define __FPU_USED       1U
+    #else
+      #error "Compiler generates FPU instructions for a device without an FPU (check __FPU_PRESENT)"
+      #define __FPU_USED       0U
+    #endif
+  #else
+    #define __FPU_USED         0U
+  #endif
+
+#endif
+
+#include "cmsis_compiler.h"               /* Defines CMSIS spécifiques au compiler */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
+#ifndef __CMSIS_GENERIC
+
+#ifndef __CORE_CM4_H_DEPENDANT
+#define __CORE_CM4_H_DEPENDANT
+
+#ifdef __cplusplus
+ extern "C" {
+#endif
+
+/* Defines device manquants : valeurs par défaut */
+#if defined __CHECK_DEVICE_DEFINES
+  #ifndef __CM4_REV
+    #define __CM4_REV               0x0000U
+    #warning "__CM4_REV not defined in device header file; using default!"
+  #endif
+
+  #ifndef __FPU_PRESENT
+    #define __FPU_PRESENT             0U
+    #warning "__FPU_PRESENT not defined in device header file; using default!"
+  #endif
+
+  #ifndef __MPU_PRESENT
+    #define __MPU_PRESENT             0U
+    #warning "__MPU_PRESENT not defined in device header file; using default!"
+  #endif
+
+  #ifndef __VTOR_PRESENT
+    #define __VTOR_PRESENT             1U
+    #warning "__VTOR_PRESENT not defined in device header file; using default!"
+  #endif
+
+  #ifndef __NVIC_PRIO_BITS
+    #define __NVIC_PRIO_BITS          3U
+    #warning "__NVIC_PRIO_BITS not defined in device header file; using default!"
+  #endif
+
+  #ifndef __Vendor_SysTickConfig
+    #define __Vendor_SysTickConfig    0U
+    #warning "__Vendor_SysTickConfig not defined in device header file; using default!"
+  #endif
+#endif
+
+/* Qualifiers IO : restrictions d’accès aux registres */
+#ifdef __cplusplus
+  #define   __I     volatile             /* Lecture seule */
+#else
+  #define   __I     volatile const       /* Lecture seule */
+#endif
+#define     __O     volatile             /* Écriture seule */
+#define     __IO    volatile             /* Lecture/écriture */
+
+#define     __IM     volatile const      /* Membre en lecture seule */
+#define     __OM     volatile            /* Membre en écriture seule */
+#define     __IOM    volatile            /* Membre en lecture/écriture */
+
+typedef union
+{
+  struct
+  {
+    uint32_t _reserved0:16;              /* Bits 0..15 : Réservé */
+    uint32_t GE:4;                       /* Bits 16..19 : Flags supérieur ou égal */
+    uint32_t _reserved1:7;               /* Bits 20..26 : Réservé */
+    uint32_t Q:1;                        /* Bits 27 : Flag saturation */
+    uint32_t V:1;                        /* Bits 28 : Flag overflow */
+    uint32_t C:1;                        /* Bits 29 : Flag carry */
+    uint32_t Z:1;                        /* Bits 30 : Flag zéro */
+    uint32_t N:1;                        /* Bits 31 : Flag négatif */
+  } b;
+  uint32_t w;
+} APSR_Type;
+
+#define APSR_N_Pos                         31U
+#define APSR_N_Msk                         (1UL << APSR_N_Pos)
+
+#define APSR_Z_Pos                         30U
+#define APSR_Z_Msk                         (1UL << APSR_Z_Pos)
+
+#define APSR_C_Pos                         29U
+#define APSR_C_Msk                         (1UL << APSR_C_Pos)
+
+#define APSR_V_Pos                         28U
+#define APSR_V_Msk                         (1UL << APSR_V_Pos)
+
+#define APSR_Q_Pos                         27U
+#define APSR_Q_Msk                         (1UL << APSR_Q_Pos)
+
+#define APSR_GE_Pos                        16U
+#define APSR_GE_Msk                        (0xFUL << APSR_GE_Pos)
+
+typedef union
+{
+  struct
+  {
+    uint32_t ISR:9;                      /* Bits 0..8 : Numéro exception */
+    uint32_t _reserved0:23;              /* Bits 9..31 : Réservé */
+  } b;
+  uint32_t w;
+} IPSR_Type;
+
+#define IPSR_ISR_Pos                        0U
+#define IPSR_ISR_Msk                       (0x1FFUL  )
+
+typedef union
+{
+  struct
+  {
+    uint32_t ISR:9;                      /* Bits 0..8 : Numéro exception */
+    uint32_t _reserved0:1;               /* Bits 9 : Réservé */
+    uint32_t ICI_IT_1:6;                 /* Bits 10..15 : ICI/IT partie 1 */
+    uint32_t GE:4;                       /* Bits 16..19 : Flags supérieur ou égal */
+    uint32_t _reserved1:4;               /* Bits 20..23 : Réservé */
+    uint32_t T:1;                        /* Bits 24 : Bit Thumb */
+    uint32_t ICI_IT_2:2;                 /* Bits 25..26 : ICI/IT partie 2 */
+    uint32_t Q:1;                        /* Bits 27 : Flag saturation */
+    uint32_t V:1;                        /* Bits 28 : Flag overflow */
+    uint32_t C:1;                        /* Bits 29 : Flag carry */
+    uint32_t Z:1;                        /* Bits 30 : Flag zéro */
+    uint32_t N:1;                        /* Bits 31 : Flag négatif */
+  } b;
+  uint32_t w;
+} xPSR_Type;
+
+#define xPSR_N_Pos                         31U
+#define xPSR_N_Msk                         (1UL << xPSR_N_Pos)
+
+#define xPSR_Z_Pos                         30U
+#define xPSR_Z_Msk                         (1UL << xPSR_Z_Pos)
+
+#define xPSR_C_Pos                         29U
+#define xPSR_C_Msk                         (1UL << xPSR_C_Pos)
+
+#define xPSR_V_Pos                         28U
+#define xPSR_V_Msk                         (1UL << xPSR_V_Pos)
+
+#define xPSR_Q_Pos                         27U
+#define xPSR_Q_Msk                         (1UL << xPSR_Q_Pos)
+
+#define xPSR_ICI_IT_2_Pos                  25U
+#define xPSR_ICI_IT_2_Msk                  (3UL << xPSR_ICI_IT_2_Pos)
+
+#define xPSR_T_Pos                         24U
+#define xPSR_T_Msk                         (1UL << xPSR_T_Pos)
+
+#define xPSR_GE_Pos                        16U
+#define xPSR_GE_Msk                        (0xFUL << xPSR_GE_Pos)
+
+#define xPSR_ICI_IT_1_Pos                  10U
+#define xPSR_ICI_IT_1_Msk                  (0x3FUL << xPSR_ICI_IT_1_Pos)
+
+#define xPSR_ISR_Pos                        0U
+#define xPSR_ISR_Msk                       (0x1FFUL  )
+
+typedef union
+{
+  struct
+  {
+    uint32_t nPRIV:1;                    /* Bits 0 : Privilège en mode Thread */
+    uint32_t SPSEL:1;                    /* Bits 1 : Sélection stack */
+    uint32_t FPCA:1;                     /* Bits 2 : Flag extension FP active */
+    uint32_t _reserved0:29;              /* Bits 3..31 : Réservé */
+  } b;
+  uint32_t w;
+} CONTROL_Type;
+
+#define CONTROL_FPCA_Pos                    2U
+#define CONTROL_FPCA_Msk                   (1UL << CONTROL_FPCA_Pos)
+
+#define CONTROL_SPSEL_Pos                   1U
+#define CONTROL_SPSEL_Msk                  (1UL << CONTROL_SPSEL_Pos)
+
+#define CONTROL_nPRIV_Pos                   0U
+#define CONTROL_nPRIV_Msk                  (1UL  )
+
+typedef struct
+{
+  __IOM uint32_t ISER[8U];               /* Décalage 0x000 (R/W) */
+        uint32_t RESERVED0[24U];
+  __IOM uint32_t ICER[8U];               /* Décalage 0x080 (R/W) */
+        uint32_t RESERVED1[24U];
+  __IOM uint32_t ISPR[8U];               /* Décalage 0x100 (R/W) */
+        uint32_t RESERVED2[24U];
+  __IOM uint32_t ICPR[8U];               /* Décalage 0x180 (R/W) */
+        uint32_t RESERVED3[24U];
+  __IOM uint32_t IABR[8U];               /* Décalage 0x200 (R/W) */
+        uint32_t RESERVED4[56U];
+  __IOM uint8_t  IP[240U];               /* Décalage 0x300 (R/W) */
+        uint32_t RESERVED5[644U];
+  __OM  uint32_t STIR;                   /* Décalage 0xE00 ( /W) */
+}  NVIC_Type;
+
+#define NVIC_STIR_INTID_Pos                 0U
+#define NVIC_STIR_INTID_Msk                (0x1FFUL  )
+
+typedef struct
+{
+  __IM  uint32_t CPUID;                  /* Décalage 0x000 (R/ ) */
+  __IOM uint32_t ICSR;                   /* Décalage 0x004 (R/W) */
+  __IOM uint32_t VTOR;                   /* Décalage 0x008 (R/W) */
+  __IOM uint32_t AIRCR;                  /* Décalage 0x00C (R/W) */
+  __IOM uint32_t SCR;                    /* Décalage 0x010 (R/W) */
+  __IOM uint32_t CCR;                    /* Décalage 0x014 (R/W) */
+  __IOM uint8_t  SHP[12U];               /* Décalage 0x018 (R/W) */
+  __IOM uint32_t SHCSR;                  /* Décalage 0x024 (R/W) */
+  __IOM uint32_t CFSR;                   /* Décalage 0x028 (R/W) */
+  __IOM uint32_t HFSR;                   /* Décalage 0x02C (R/W) */
+  __IOM uint32_t DFSR;                   /* Décalage 0x030 (R/W) */
+  __IOM uint32_t MMFAR;                  /* Décalage 0x034 (R/W) */
+  __IOM uint32_t BFAR;                   /* Décalage 0x038 (R/W) */
+  __IOM uint32_t AFSR;                   /* Décalage 0x03C (R/W) */
+  __IM  uint32_t PFR[2U];                /* Décalage 0x040 (R/ ) */
+  __IM  uint32_t DFR;                    /* Décalage 0x048 (R/ ) */
+  __IM  uint32_t ADR;                    /* Décalage 0x04C (R/ ) */
+  __IM  uint32_t MMFR[4U];               /* Décalage 0x050 (R/ ) */
+  __IM  uint32_t ISAR[5U];               /* Décalage 0x060 (R/ ) */
+        uint32_t RESERVED0[5U];
+  __IOM uint32_t CPACR;                  /* Décalage 0x088 (R/W) */
+} SCB_Type;
+
+#define SCB_CPUID_IMPLEMENTER_Pos          24U
+#define SCB_CPUID_IMPLEMENTER_Msk          (0xFFUL << SCB_CPUID_IMPLEMENTER_Pos)
+
+#define SCB_CPUID_VARIANT_Pos              20U
+#define SCB_CPUID_VARIANT_Msk              (0xFUL << SCB_CPUID_VARIANT_Pos)
+
+#define SCB_CPUID_ARCHITECTURE_Pos         16U
+#define SCB_CPUID_ARCHITECTURE_Msk         (0xFUL << SCB_CPUID_ARCHITECTURE_Pos)
+
+#define SCB_CPUID_PARTNO_Pos                4U
+#define SCB_CPUID_PARTNO_Msk               (0xFFFUL << SCB_CPUID_PARTNO_Pos)
+
+#define SCB_CPUID_REVISION_Pos              0U
+#define SCB_CPUID_REVISION_Msk             (0xFUL  )
+
+#define SCB_ICSR_NMIPENDSET_Pos            31U
+#define SCB_ICSR_NMIPENDSET_Msk            (1UL << SCB_ICSR_NMIPENDSET_Pos)
+
+#define SCB_ICSR_PENDSVSET_Pos             28U
+#define SCB_ICSR_PENDSVSET_Msk             (1UL << SCB_ICSR_PENDSVSET_Pos)
+
+#define SCB_ICSR_PENDSVCLR_Pos             27U
+#define SCB_ICSR_PENDSVCLR_Msk             (1UL << SCB_ICSR_PENDSVCLR_Pos)
+
+#define SCB_ICSR_PENDSTSET_Pos             26U
+#define SCB_ICSR_PENDSTSET_Msk             (1UL << SCB_ICSR_PENDSTSET_Pos)
+
+#define SCB_ICSR_PENDSTCLR_Pos             25U
+#define SCB_ICSR_PENDSTCLR_Msk             (1UL << SCB_ICSR_PENDSTCLR_Pos)
+
+#define SCB_ICSR_ISRPREEMPT_Pos            23U
+#define SCB_ICSR_ISRPREEMPT_Msk            (1UL << SCB_ICSR_ISRPREEMPT_Pos)
+
+#define SCB_ICSR_ISRPENDING_Pos            22U
+#define SCB_ICSR_ISRPENDING_Msk            (1UL << SCB_ICSR_ISRPENDING_Pos)
+
+#define SCB_ICSR_VECTPENDING_Pos           12U
+#define SCB_ICSR_VECTPENDING_Msk           (0x1FFUL << SCB_ICSR_VECTPENDING_Pos)
+
+#define SCB_ICSR_RETTOBASE_Pos             11U
+#define SCB_ICSR_RETTOBASE_Msk             (1UL << SCB_ICSR_RETTOBASE_Pos)
+
+#define SCB_ICSR_VECTACTIVE_Pos             0U
+#define SCB_ICSR_VECTACTIVE_Msk            (0x1FFUL  )
+
+#define SCB_VTOR_TBLOFF_Pos                 7U
+#define SCB_VTOR_TBLOFF_Msk                (0x1FFFFFFUL << SCB_VTOR_TBLOFF_Pos)
+
+#define SCB_AIRCR_VECTKEY_Pos              16U
+#define SCB_AIRCR_VECTKEY_Msk              (0xFFFFUL << SCB_AIRCR_VECTKEY_Pos)
+
+#define SCB_AIRCR_VECTKEYSTAT_Pos          16U
+#define SCB_AIRCR_VECTKEYSTAT_Msk          (0xFFFFUL << SCB_AIRCR_VECTKEYSTAT_Pos)
+
+#define SCB_AIRCR_ENDIANESS_Pos            15U
+#define SCB_AIRCR_ENDIANESS_Msk            (1UL << SCB_AIRCR_ENDIANESS_Pos)
+
+#define SCB_AIRCR_PRIGROUP_Pos              8U
+#define SCB_AIRCR_PRIGROUP_Msk             (7UL << SCB_AIRCR_PRIGROUP_Pos)
+
+#define SCB_AIRCR_SYSRESETREQ_Pos           2U
+#define SCB_AIRCR_SYSRESETREQ_Msk          (1UL << SCB_AIRCR_SYSRESETREQ_Pos)
+
+#define SCB_AIRCR_VECTCLRACTIVE_Pos         1U
+#define SCB_AIRCR_VECTCLRACTIVE_Msk        (1UL << SCB_AIRCR_VECTCLRACTIVE_Pos)
+
+#define SCB_AIRCR_VECTRESET_Pos             0U
+#define SCB_AIRCR_VECTRESET_Msk            (1UL  )
+
+#define SCB_SCR_SEVONPEND_Pos               4U
+#define SCB_SCR_SEVONPEND_Msk              (1UL << SCB_SCR_SEVONPEND_Pos)
+
+#define SCB_SCR_SLEEPDEEP_Pos               2U
+#define SCB_SCR_SLEEPDEEP_Msk              (1UL << SCB_SCR_SLEEPDEEP_Pos)
+
+#define SCB_SCR_SLEEPONEXIT_Pos             1U
+#define SCB_SCR_SLEEPONEXIT_Msk            (1UL << SCB_SCR_SLEEPONEXIT_Pos)
+
+#define SCB_CCR_STKALIGN_Pos                9U
+#define SCB_CCR_STKALIGN_Msk               (1UL << SCB_CCR_STKALIGN_Pos)
+
+#define SCB_CCR_BFHFNMIGN_Pos               8U
+#define SCB_CCR_BFHFNMIGN_Msk              (1UL << SCB_CCR_BFHFNMIGN_Pos)
+
+#define SCB_CCR_DIV_0_TRP_Pos               4U
+#define SCB_CCR_DIV_0_TRP_Msk              (1UL << SCB_CCR_DIV_0_TRP_Pos)
+
+#define SCB_CCR_UNALIGN_TRP_Pos             3U
+#define SCB_CCR_UNALIGN_TRP_Msk            (1UL << SCB_CCR_UNALIGN_TRP_Pos)
+
+#define SCB_CCR_USERSETMPEND_Pos            1U
+#define SCB_CCR_USERSETMPEND_Msk           (1UL << SCB_CCR_USERSETMPEND_Pos)
+
+#define SCB_CCR_NONBASETHRDENA_Pos          0U
+#define SCB_CCR_NONBASETHRDENA_Msk         (1UL  )
+
+#define SCB_SHCSR_USGFAULTENA_Pos          18U
+#define SCB_SHCSR_USGFAULTENA_Msk          (1UL << SCB_SHCSR_USGFAULTENA_Pos)
+
+#define SCB_SHCSR_BUSFAULTENA_Pos          17U
+#define SCB_SHCSR_BUSFAULTENA_Msk          (1UL << SCB_SHCSR_BUSFAULTENA_Pos)
+
+#define SCB_SHCSR_MEMFAULTENA_Pos          16U
+#define SCB_SHCSR_MEMFAULTENA_Msk          (1UL << SCB_SHCSR_MEMFAULTENA_Pos)
+
+#define SCB_SHCSR_SVCALLPENDED_Pos         15U
+#define SCB_SHCSR_SVCALLPENDED_Msk         (1UL << SCB_SHCSR_SVCALLPENDED_Pos)
+
+#define SCB_SHCSR_BUSFAULTPENDED_Pos       14U
+#define SCB_SHCSR_BUSFAULTPENDED_Msk       (1UL << SCB_SHCSR_BUSFAULTPENDED_Pos)
+
+#define SCB_SHCSR_MEMFAULTPENDED_Pos       13U
+#define SCB_SHCSR_MEMFAULTPENDED_Msk       (1UL << SCB_SHCSR_MEMFAULTPENDED_Pos)
+
+#define SCB_SHCSR_USGFAULTPENDED_Pos       12U
+#define SCB_SHCSR_USGFAULTPENDED_Msk       (1UL << SCB_SHCSR_USGFAULTPENDED_Pos)
+
+#define SCB_SHCSR_SYSTICKACT_Pos           11U
+#define SCB_SHCSR_SYSTICKACT_Msk           (1UL << SCB_SHCSR_SYSTICKACT_Pos)
+
+#define SCB_SHCSR_PENDSVACT_Pos            10U
+#define SCB_SHCSR_PENDSVACT_Msk            (1UL << SCB_SHCSR_PENDSVACT_Pos)
+
+#define SCB_SHCSR_MONITORACT_Pos            8U
+#define SCB_SHCSR_MONITORACT_Msk           (1UL << SCB_SHCSR_MONITORACT_Pos)
+
+#define SCB_SHCSR_SVCALLACT_Pos             7U
+#define SCB_SHCSR_SVCALLACT_Msk            (1UL << SCB_SHCSR_SVCALLACT_Pos)
+
+#define SCB_SHCSR_USGFAULTACT_Pos           3U
+#define SCB_SHCSR_USGFAULTACT_Msk          (1UL << SCB_SHCSR_USGFAULTACT_Pos)
+
+#define SCB_SHCSR_BUSFAULTACT_Pos           1U
+#define SCB_SHCSR_BUSFAULTACT_Msk          (1UL << SCB_SHCSR_BUSFAULTACT_Pos)
+
+#define SCB_SHCSR_MEMFAULTACT_Pos           0U
+#define SCB_SHCSR_MEMFAULTACT_Msk          (1UL  )
+
+#define SCB_CFSR_USGFAULTSR_Pos            16U
+#define SCB_CFSR_USGFAULTSR_Msk            (0xFFFFUL << SCB_CFSR_USGFAULTSR_Pos)
+
+#define SCB_CFSR_BUSFAULTSR_Pos             8U
+#define SCB_CFSR_BUSFAULTSR_Msk            (0xFFUL << SCB_CFSR_BUSFAULTSR_Pos)
+
+#define SCB_CFSR_MEMFAULTSR_Pos             0U
+#define SCB_CFSR_MEMFAULTSR_Msk            (0xFFUL  )
+
+/* MemManage : sous-champ de SCB CFSR */
+#define SCB_CFSR_MMARVALID_Pos             (SCB_CFSR_MEMFAULTSR_Pos + 7U)
+#define SCB_CFSR_MMARVALID_Msk             (1UL << SCB_CFSR_MMARVALID_Pos)
+
+#define SCB_CFSR_MLSPERR_Pos               (SCB_CFSR_MEMFAULTSR_Pos + 5U)
+#define SCB_CFSR_MLSPERR_Msk               (1UL << SCB_CFSR_MLSPERR_Pos)
+
+#define SCB_CFSR_MSTKERR_Pos               (SCB_CFSR_MEMFAULTSR_Pos + 4U)
+#define SCB_CFSR_MSTKERR_Msk               (1UL << SCB_CFSR_MSTKERR_Pos)
+
+#define SCB_CFSR_MUNSTKERR_Pos             (SCB_CFSR_MEMFAULTSR_Pos + 3U)
+#define SCB_CFSR_MUNSTKERR_Msk             (1UL << SCB_CFSR_MUNSTKERR_Pos)
+
+#define SCB_CFSR_DACCVIOL_Pos              (SCB_CFSR_MEMFAULTSR_Pos + 1U)
+#define SCB_CFSR_DACCVIOL_Msk              (1UL << SCB_CFSR_DACCVIOL_Pos)
+
+#define SCB_CFSR_IACCVIOL_Pos              (SCB_CFSR_MEMFAULTSR_Pos + 0U)
+#define SCB_CFSR_IACCVIOL_Msk              (1UL  )
+
+/* BusFault : sous-champ de SCB CFSR */
+#define SCB_CFSR_BFARVALID_Pos            (SCB_CFSR_BUSFAULTSR_Pos + 7U)
+#define SCB_CFSR_BFARVALID_Msk            (1UL << SCB_CFSR_BFARVALID_Pos)
+
+#define SCB_CFSR_LSPERR_Pos               (SCB_CFSR_BUSFAULTSR_Pos + 5U)
+#define SCB_CFSR_LSPERR_Msk               (1UL << SCB_CFSR_LSPERR_Pos)
+
+#define SCB_CFSR_STKERR_Pos               (SCB_CFSR_BUSFAULTSR_Pos + 4U)
+#define SCB_CFSR_STKERR_Msk               (1UL << SCB_CFSR_STKERR_Pos)
+
+#define SCB_CFSR_UNSTKERR_Pos             (SCB_CFSR_BUSFAULTSR_Pos + 3U)
+#define SCB_CFSR_UNSTKERR_Msk             (1UL << SCB_CFSR_UNSTKERR_Pos)
+
+#define SCB_CFSR_IMPRECISERR_Pos          (SCB_CFSR_BUSFAULTSR_Pos + 2U)
+#define SCB_CFSR_IMPRECISERR_Msk          (1UL << SCB_CFSR_IMPRECISERR_Pos)
+
+#define SCB_CFSR_PRECISERR_Pos            (SCB_CFSR_BUSFAULTSR_Pos + 1U)
+#define SCB_CFSR_PRECISERR_Msk            (1UL << SCB_CFSR_PRECISERR_Pos)
+
+#define SCB_CFSR_IBUSERR_Pos              (SCB_CFSR_BUSFAULTSR_Pos + 0U)
+#define SCB_CFSR_IBUSERR_Msk              (1UL << SCB_CFSR_IBUSERR_Pos)
+
+/* UsageFault : sous-champ de SCB CFSR */
+#define SCB_CFSR_DIVBYZERO_Pos            (SCB_CFSR_USGFAULTSR_Pos + 9U)
+#define SCB_CFSR_DIVBYZERO_Msk            (1UL << SCB_CFSR_DIVBYZERO_Pos)
+
+#define SCB_CFSR_UNALIGNED_Pos            (SCB_CFSR_USGFAULTSR_Pos + 8U)
+#define SCB_CFSR_UNALIGNED_Msk            (1UL << SCB_CFSR_UNALIGNED_Pos)
+
+#define SCB_CFSR_NOCP_Pos                 (SCB_CFSR_USGFAULTSR_Pos + 3U)
+#define SCB_CFSR_NOCP_Msk                 (1UL << SCB_CFSR_NOCP_Pos)
+
+#define SCB_CFSR_INVPC_Pos                (SCB_CFSR_USGFAULTSR_Pos + 2U)
+#define SCB_CFSR_INVPC_Msk                (1UL << SCB_CFSR_INVPC_Pos)
+
+#define SCB_CFSR_INVSTATE_Pos             (SCB_CFSR_USGFAULTSR_Pos + 1U)
+#define SCB_CFSR_INVSTATE_Msk             (1UL << SCB_CFSR_INVSTATE_Pos)
+
+#define SCB_CFSR_UNDEFINSTR_Pos           (SCB_CFSR_USGFAULTSR_Pos + 0U)
+#define SCB_CFSR_UNDEFINSTR_Msk           (1UL << SCB_CFSR_UNDEFINSTR_Pos)
+
+#define SCB_HFSR_DEBUGEVT_Pos              31U
+#define SCB_HFSR_DEBUGEVT_Msk              (1UL << SCB_HFSR_DEBUGEVT_Pos)
+
+#define SCB_HFSR_FORCED_Pos                30U
+#define SCB_HFSR_FORCED_Msk                (1UL << SCB_HFSR_FORCED_Pos)
+
+#define SCB_HFSR_VECTTBL_Pos                1U
+#define SCB_HFSR_VECTTBL_Msk               (1UL << SCB_HFSR_VECTTBL_Pos)
+
+#define SCB_DFSR_EXTERNAL_Pos               4U
+#define SCB_DFSR_EXTERNAL_Msk              (1UL << SCB_DFSR_EXTERNAL_Pos)
+
+#define SCB_DFSR_VCATCH_Pos                 3U
+#define SCB_DFSR_VCATCH_Msk                (1UL << SCB_DFSR_VCATCH_Pos)
+
+#define SCB_DFSR_DWTTRAP_Pos                2U
+#define SCB_DFSR_DWTTRAP_Msk               (1UL << SCB_DFSR_DWTTRAP_Pos)
+
+#define SCB_DFSR_BKPT_Pos                   1U
+#define SCB_DFSR_BKPT_Msk                  (1UL << SCB_DFSR_BKPT_Pos)
+
+#define SCB_DFSR_HALTED_Pos                 0U
+#define SCB_DFSR_HALTED_Msk                (1UL  )
+
+typedef struct
+{
+        uint32_t RESERVED0[1U];
+  __IM  uint32_t ICTR;                   /* Décalage 0x004 (R/ ) */
+  __IOM uint32_t ACTLR;                  /* Décalage 0x008 (R/W) */
+} SCnSCB_Type;
+
+#define SCnSCB_ICTR_INTLINESNUM_Pos         0U
+#define SCnSCB_ICTR_INTLINESNUM_Msk        (0xFUL  )
+
+#define SCnSCB_ACTLR_DISOOFP_Pos            9U
+#define SCnSCB_ACTLR_DISOOFP_Msk           (1UL << SCnSCB_ACTLR_DISOOFP_Pos)
+
+#define SCnSCB_ACTLR_DISFPCA_Pos            8U
+#define SCnSCB_ACTLR_DISFPCA_Msk           (1UL << SCnSCB_ACTLR_DISFPCA_Pos)
+
+#define SCnSCB_ACTLR_DISFOLD_Pos            2U
+#define SCnSCB_ACTLR_DISFOLD_Msk           (1UL << SCnSCB_ACTLR_DISFOLD_Pos)
+
+#define SCnSCB_ACTLR_DISDEFWBUF_Pos         1U
+#define SCnSCB_ACTLR_DISDEFWBUF_Msk        (1UL << SCnSCB_ACTLR_DISDEFWBUF_Pos)
+
+#define SCnSCB_ACTLR_DISMCYCINT_Pos         0U
+#define SCnSCB_ACTLR_DISMCYCINT_Msk        (1UL  )
+
+typedef struct
+{
+  __IOM uint32_t CTRL;                   /* Décalage 0x000 (R/W) */
+  __IOM uint32_t LOAD;                   /* Décalage 0x004 (R/W) */
+  __IOM uint32_t VAL;                    /* Décalage 0x008 (R/W) */
+  __IM  uint32_t CALIB;                  /* Décalage 0x00C (R/ ) */
+} SysTick_Type;
+
+#define SysTick_CTRL_COUNTFLAG_Pos         16U
+#define SysTick_CTRL_COUNTFLAG_Msk         (1UL << SysTick_CTRL_COUNTFLAG_Pos)
+
+#define SysTick_CTRL_CLKSOURCE_Pos          2U
+#define SysTick_CTRL_CLKSOURCE_Msk         (1UL << SysTick_CTRL_CLKSOURCE_Pos)
+
+#define SysTick_CTRL_TICKINT_Pos            1U
+#define SysTick_CTRL_TICKINT_Msk           (1UL << SysTick_CTRL_TICKINT_Pos)
+
+#define SysTick_CTRL_ENABLE_Pos             0U
+#define SysTick_CTRL_ENABLE_Msk            (1UL  )
+
+#define SysTick_LOAD_RELOAD_Pos             0U
+#define SysTick_LOAD_RELOAD_Msk            (0xFFFFFFUL  )
+
+#define SysTick_VAL_CURRENT_Pos             0U
+#define SysTick_VAL_CURRENT_Msk            (0xFFFFFFUL  )
+
+#define SysTick_CALIB_NOREF_Pos            31U
+#define SysTick_CALIB_NOREF_Msk            (1UL << SysTick_CALIB_NOREF_Pos)
+
+#define SysTick_CALIB_SKEW_Pos             30U
+#define SysTick_CALIB_SKEW_Msk             (1UL << SysTick_CALIB_SKEW_Pos)
+
+#define SysTick_CALIB_TENMS_Pos             0U
+#define SysTick_CALIB_TENMS_Msk            (0xFFFFFFUL  )
+
+typedef struct
+{
+  __OM  union
+  {
+    __OM  uint8_t    u8;                 /* Décalage 0x000 ( /W) */
+    __OM  uint16_t   u16;                /* Décalage 0x000 ( /W) */
+    __OM  uint32_t   u32;                /* Décalage 0x000 ( /W) */
+  }  PORT [32U];                         /* Décalage 0x000 ( /W) */
+        uint32_t RESERVED0[864U];
+  __IOM uint32_t TER;                    /* Décalage 0xE00 (R/W) */
+        uint32_t RESERVED1[15U];
+  __IOM uint32_t TPR;                    /* Décalage 0xE40 (R/W) */
+        uint32_t RESERVED2[15U];
+  __IOM uint32_t TCR;                    /* Décalage 0xE80 (R/W) */
+        uint32_t RESERVED3[32U];
+        uint32_t RESERVED4[43U];
+  __OM  uint32_t LAR;                    /* Décalage 0xFB0 ( /W) */
+  __IM  uint32_t LSR;                    /* Décalage 0xFB4 (R/ ) */
+        uint32_t RESERVED5[6U];
+  __IM  uint32_t PID4;                   /* Décalage 0xFD0 (R/ ) */
+  __IM  uint32_t PID5;                   /* Décalage 0xFD4 (R/ ) */
+  __IM  uint32_t PID6;                   /* Décalage 0xFD8 (R/ ) */
+  __IM  uint32_t PID7;                   /* Décalage 0xFDC (R/ ) */
+  __IM  uint32_t PID0;                   /* Décalage 0xFE0 (R/ ) */
+  __IM  uint32_t PID1;                   /* Décalage 0xFE4 (R/ ) */
+  __IM  uint32_t PID2;                   /* Décalage 0xFE8 (R/ ) */
+  __IM  uint32_t PID3;                   /* Décalage 0xFEC (R/ ) */
+  __IM  uint32_t CID0;                   /* Décalage 0xFF0 (R/ ) */
+  __IM  uint32_t CID1;                   /* Décalage 0xFF4 (R/ ) */
+  __IM  uint32_t CID2;                   /* Décalage 0xFF8 (R/ ) */
+  __IM  uint32_t CID3;                   /* Décalage 0xFFC (R/ ) */
+} ITM_Type;
+
+#define ITM_TPR_PRIVMASK_Pos                0U
+#define ITM_TPR_PRIVMASK_Msk               (0xFFFFFFFFUL  )
+
+#define ITM_TCR_BUSY_Pos                   23U
+#define ITM_TCR_BUSY_Msk                   (1UL << ITM_TCR_BUSY_Pos)
+
+#define ITM_TCR_TRACEBUSID_Pos             16U
+#define ITM_TCR_TRACEBUSID_Msk             (0x7FUL << ITM_TCR_TRACEBUSID_Pos)
+
+#define ITM_TCR_GTSFREQ_Pos                10U
+#define ITM_TCR_GTSFREQ_Msk                (3UL << ITM_TCR_GTSFREQ_Pos)
+
+#define ITM_TCR_TSPRESCALE_Pos              8U
+#define ITM_TCR_TSPRESCALE_Msk             (3UL << ITM_TCR_TSPRESCALE_Pos)
+
+#define ITM_TCR_SWOENA_Pos                  4U
+#define ITM_TCR_SWOENA_Msk                 (1UL << ITM_TCR_SWOENA_Pos)
+
+#define ITM_TCR_DWTENA_Pos                  3U
+#define ITM_TCR_DWTENA_Msk                 (1UL << ITM_TCR_DWTENA_Pos)
+
+#define ITM_TCR_SYNCENA_Pos                 2U
+#define ITM_TCR_SYNCENA_Msk                (1UL << ITM_TCR_SYNCENA_Pos)
+
+#define ITM_TCR_TSENA_Pos                   1U
+#define ITM_TCR_TSENA_Msk                  (1UL << ITM_TCR_TSENA_Pos)
+
+#define ITM_TCR_ITMENA_Pos                  0U
+#define ITM_TCR_ITMENA_Msk                 (1UL  )
+
+#define ITM_LSR_BYTEACC_Pos                 2U
+#define ITM_LSR_BYTEACC_Msk                (1UL << ITM_LSR_BYTEACC_Pos)
+
+#define ITM_LSR_ACCESS_Pos                  1U
+#define ITM_LSR_ACCESS_Msk                 (1UL << ITM_LSR_ACCESS_Pos)
+
+#define ITM_LSR_PRESENT_Pos                 0U
+#define ITM_LSR_PRESENT_Msk                (1UL  )
+
+typedef struct
+{
+  __IOM uint32_t CTRL;                   /* Décalage 0x000 (R/W) */
+  __IOM uint32_t CYCCNT;                 /* Décalage 0x004 (R/W) */
+  __IOM uint32_t CPICNT;                 /* Décalage 0x008 (R/W) */
+  __IOM uint32_t EXCCNT;                 /* Décalage 0x00C (R/W) */
+  __IOM uint32_t SLEEPCNT;               /* Décalage 0x010 (R/W) */
+  __IOM uint32_t LSUCNT;                 /* Décalage 0x014 (R/W) */
+  __IOM uint32_t FOLDCNT;                /* Décalage 0x018 (R/W) */
+  __IM  uint32_t PCSR;                   /* Décalage 0x01C (R/ ) */
+  __IOM uint32_t COMP0;                  /* Décalage 0x020 (R/W) */
+  __IOM uint32_t MASK0;                  /* Décalage 0x024 (R/W) */
+  __IOM uint32_t FUNCTION0;              /* Décalage 0x028 (R/W) */
+        uint32_t RESERVED0[1U];
+  __IOM uint32_t COMP1;                  /* Décalage 0x030 (R/W) */
+  __IOM uint32_t MASK1;                  /* Décalage 0x034 (R/W) */
+  __IOM uint32_t FUNCTION1;              /* Décalage 0x038 (R/W) */
+        uint32_t RESERVED1[1U];
+  __IOM uint32_t COMP2;                  /* Décalage 0x040 (R/W) */
+  __IOM uint32_t MASK2;                  /* Décalage 0x044 (R/W) */
+  __IOM uint32_t FUNCTION2;              /* Décalage 0x048 (R/W) */
+        uint32_t RESERVED2[1U];
+  __IOM uint32_t COMP3;                  /* Décalage 0x050 (R/W) */
+  __IOM uint32_t MASK3;                  /* Décalage 0x054 (R/W) */
+  __IOM uint32_t FUNCTION3;              /* Décalage 0x058 (R/W) */
+} DWT_Type;
+
+#define DWT_CTRL_NUMCOMP_Pos               28U
+#define DWT_CTRL_NUMCOMP_Msk               (0xFUL << DWT_CTRL_NUMCOMP_Pos)
+
+#define DWT_CTRL_NOTRCPKT_Pos              27U
+#define DWT_CTRL_NOTRCPKT_Msk              (0x1UL << DWT_CTRL_NOTRCPKT_Pos)
+
+#define DWT_CTRL_NOEXTTRIG_Pos             26U
+#define DWT_CTRL_NOEXTTRIG_Msk             (0x1UL << DWT_CTRL_NOEXTTRIG_Pos)
+
+#define DWT_CTRL_NOCYCCNT_Pos              25U
+#define DWT_CTRL_NOCYCCNT_Msk              (0x1UL << DWT_CTRL_NOCYCCNT_Pos)
+
+#define DWT_CTRL_NOPRFCNT_Pos              24U
+#define DWT_CTRL_NOPRFCNT_Msk              (0x1UL << DWT_CTRL_NOPRFCNT_Pos)
+
+#define DWT_CTRL_CYCEVTENA_Pos             22U
+#define DWT_CTRL_CYCEVTENA_Msk             (0x1UL << DWT_CTRL_CYCEVTENA_Pos)
+
+#define DWT_CTRL_FOLDEVTENA_Pos            21U
+#define DWT_CTRL_FOLDEVTENA_Msk            (0x1UL << DWT_CTRL_FOLDEVTENA_Pos)
+
+#define DWT_CTRL_LSUEVTENA_Pos             20U
+#define DWT_CTRL_LSUEVTENA_Msk             (0x1UL << DWT_CTRL_LSUEVTENA_Pos)
+
+#define DWT_CTRL_SLEEPEVTENA_Pos           19U
+#define DWT_CTRL_SLEEPEVTENA_Msk           (0x1UL << DWT_CTRL_SLEEPEVTENA_Pos)
+
+#define DWT_CTRL_EXCEVTENA_Pos             18U
+#define DWT_CTRL_EXCEVTENA_Msk             (0x1UL << DWT_CTRL_EXCEVTENA_Pos)
+
+#define DWT_CTRL_CPIEVTENA_Pos             17U
+#define DWT_CTRL_CPIEVTENA_Msk             (0x1UL << DWT_CTRL_CPIEVTENA_Pos)
+
+#define DWT_CTRL_EXCTRCENA_Pos             16U
+#define DWT_CTRL_EXCTRCENA_Msk             (0x1UL << DWT_CTRL_EXCTRCENA_Pos)
+
+#define DWT_CTRL_PCSAMPLENA_Pos            12U
+#define DWT_CTRL_PCSAMPLENA_Msk            (0x1UL << DWT_CTRL_PCSAMPLENA_Pos)
+
+#define DWT_CTRL_SYNCTAP_Pos               10U
+#define DWT_CTRL_SYNCTAP_Msk               (0x3UL << DWT_CTRL_SYNCTAP_Pos)
+
+#define DWT_CTRL_CYCTAP_Pos                 9U
+#define DWT_CTRL_CYCTAP_Msk                (0x1UL << DWT_CTRL_CYCTAP_Pos)
+
+#define DWT_CTRL_POSTINIT_Pos               5U
+#define DWT_CTRL_POSTINIT_Msk              (0xFUL << DWT_CTRL_POSTINIT_Pos)
+
+#define DWT_CTRL_POSTPRESET_Pos             1U
+#define DWT_CTRL_POSTPRESET_Msk            (0xFUL << DWT_CTRL_POSTPRESET_Pos)
+
+#define DWT_CTRL_CYCCNTENA_Pos              0U
+#define DWT_CTRL_CYCCNTENA_Msk             (0x1UL  )
+
+#define DWT_CPICNT_CPICNT_Pos               0U
+#define DWT_CPICNT_CPICNT_Msk              (0xFFUL  )
+
+#define DWT_EXCCNT_EXCCNT_Pos               0U
+#define DWT_EXCCNT_EXCCNT_Msk              (0xFFUL  )
+
+#define DWT_SLEEPCNT_SLEEPCNT_Pos           0U
+#define DWT_SLEEPCNT_SLEEPCNT_Msk          (0xFFUL  )
+
+#define DWT_LSUCNT_LSUCNT_Pos               0U
+#define DWT_LSUCNT_LSUCNT_Msk              (0xFFUL  )
+
+#define DWT_FOLDCNT_FOLDCNT_Pos             0U
+#define DWT_FOLDCNT_FOLDCNT_Msk            (0xFFUL  )
+
+#define DWT_MASK_MASK_Pos                   0U
+#define DWT_MASK_MASK_Msk                  (0x1FUL  )
+
+#define DWT_FUNCTION_MATCHED_Pos           24U
+#define DWT_FUNCTION_MATCHED_Msk           (0x1UL << DWT_FUNCTION_MATCHED_Pos)
+
+#define DWT_FUNCTION_DATAVADDR1_Pos        16U
+#define DWT_FUNCTION_DATAVADDR1_Msk        (0xFUL << DWT_FUNCTION_DATAVADDR1_Pos)
+
+#define DWT_FUNCTION_DATAVADDR0_Pos        12U
+#define DWT_FUNCTION_DATAVADDR0_Msk        (0xFUL << DWT_FUNCTION_DATAVADDR0_Pos)
+
+#define DWT_FUNCTION_DATAVSIZE_Pos         10U
+#define DWT_FUNCTION_DATAVSIZE_Msk         (0x3UL << DWT_FUNCTION_DATAVSIZE_Pos)
+
+#define DWT_FUNCTION_LNK1ENA_Pos            9U
+#define DWT_FUNCTION_LNK1ENA_Msk           (0x1UL << DWT_FUNCTION_LNK1ENA_Pos)
+
+#define DWT_FUNCTION_DATAVMATCH_Pos         8U
+#define DWT_FUNCTION_DATAVMATCH_Msk        (0x1UL << DWT_FUNCTION_DATAVMATCH_Pos)
+
+#define DWT_FUNCTION_CYCMATCH_Pos           7U
+#define DWT_FUNCTION_CYCMATCH_Msk          (0x1UL << DWT_FUNCTION_CYCMATCH_Pos)
+
+#define DWT_FUNCTION_EMITRANGE_Pos          5U
+#define DWT_FUNCTION_EMITRANGE_Msk         (0x1UL << DWT_FUNCTION_EMITRANGE_Pos)
+
+#define DWT_FUNCTION_FUNCTION_Pos           0U
+#define DWT_FUNCTION_FUNCTION_Msk          (0xFUL  )
+
+typedef struct
+{
+  __IM  uint32_t SSPSR;                  /* Décalage 0x000 (R/ ) */
+  __IOM uint32_t CSPSR;                  /* Décalage 0x004 (R/W) */
+        uint32_t RESERVED0[2U];
+  __IOM uint32_t ACPR;                   /* Décalage 0x010 (R/W) */
+        uint32_t RESERVED1[55U];
+  __IOM uint32_t SPPR;                   /* Décalage 0x0F0 (R/W) */
+        uint32_t RESERVED2[131U];
+  __IM  uint32_t FFSR;                   /* Décalage 0x300 (R/ ) */
+  __IOM uint32_t FFCR;                   /* Décalage 0x304 (R/W) */
+  __IM  uint32_t FSCR;                   /* Décalage 0x308 (R/ ) */
+        uint32_t RESERVED3[759U];
+  __IM  uint32_t TRIGGER;                /* Décalage 0xEE8 (R/ ) */
+  __IM  uint32_t FIFO0;                  /* Décalage 0xEEC (R/ ) */
+  __IM  uint32_t ITATBCTR2;              /* Décalage 0xEF0 (R/ ) */
+        uint32_t RESERVED4[1U];
+  __IM  uint32_t ITATBCTR0;              /* Décalage 0xEF8 (R/ ) */
+  __IM  uint32_t FIFO1;                  /* Décalage 0xEFC (R/ ) */
+  __IOM uint32_t ITCTRL;                 /* Décalage 0xF00 (R/W) */
+        uint32_t RESERVED5[39U];
+  __IOM uint32_t CLAIMSET;               /* Décalage 0xFA0 (R/W) */
+  __IOM uint32_t CLAIMCLR;               /* Décalage 0xFA4 (R/W) */
+        uint32_t RESERVED7[8U];
+  __IM  uint32_t DEVID;                  /* Décalage 0xFC8 (R/ ) */
+  __IM  uint32_t DEVTYPE;                /* Décalage 0xFCC (R/ ) */
+} TPI_Type;
+
+#define TPI_ACPR_PRESCALER_Pos              0U
+#define TPI_ACPR_PRESCALER_Msk             (0x1FFFUL  )
+
+#define TPI_SPPR_TXMODE_Pos                 0U
+#define TPI_SPPR_TXMODE_Msk                (0x3UL  )
+
+#define TPI_FFSR_FtNonStop_Pos              3U
+#define TPI_FFSR_FtNonStop_Msk             (0x1UL << TPI_FFSR_FtNonStop_Pos)
+
+#define TPI_FFSR_TCPresent_Pos              2U
+#define TPI_FFSR_TCPresent_Msk             (0x1UL << TPI_FFSR_TCPresent_Pos)
+
+#define TPI_FFSR_FtStopped_Pos              1U
+#define TPI_FFSR_FtStopped_Msk             (0x1UL << TPI_FFSR_FtStopped_Pos)
+
+#define TPI_FFSR_FlInProg_Pos               0U
+#define TPI_FFSR_FlInProg_Msk              (0x1UL  )
+
+#define TPI_FFCR_TrigIn_Pos                 8U
+#define TPI_FFCR_TrigIn_Msk                (0x1UL << TPI_FFCR_TrigIn_Pos)
+
+#define TPI_FFCR_EnFCont_Pos                1U
+#define TPI_FFCR_EnFCont_Msk               (0x1UL << TPI_FFCR_EnFCont_Pos)
+
+#define TPI_TRIGGER_TRIGGER_Pos             0U
+#define TPI_TRIGGER_TRIGGER_Msk            (0x1UL  )
+
+#define TPI_FIFO0_ITM_ATVALID_Pos          29U
+#define TPI_FIFO0_ITM_ATVALID_Msk          (0x1UL << TPI_FIFO0_ITM_ATVALID_Pos)
+
+#define TPI_FIFO0_ITM_bytecount_Pos        27U
+#define TPI_FIFO0_ITM_bytecount_Msk        (0x3UL << TPI_FIFO0_ITM_bytecount_Pos)
+
+#define TPI_FIFO0_ETM_ATVALID_Pos          26U
+#define TPI_FIFO0_ETM_ATVALID_Msk          (0x1UL << TPI_FIFO0_ETM_ATVALID_Pos)
+
+#define TPI_FIFO0_ETM_bytecount_Pos        24U
+#define TPI_FIFO0_ETM_bytecount_Msk        (0x3UL << TPI_FIFO0_ETM_bytecount_Pos)
+
+#define TPI_FIFO0_ETM2_Pos                 16U
+#define TPI_FIFO0_ETM2_Msk                 (0xFFUL << TPI_FIFO0_ETM2_Pos)
+
+#define TPI_FIFO0_ETM1_Pos                  8U
+#define TPI_FIFO0_ETM1_Msk                 (0xFFUL << TPI_FIFO0_ETM1_Pos)
+
+#define TPI_FIFO0_ETM0_Pos                  0U
+#define TPI_FIFO0_ETM0_Msk                 (0xFFUL  )
+
+#define TPI_ITATBCTR2_ATREADY2_Pos          0U
+#define TPI_ITATBCTR2_ATREADY2_Msk         (0x1UL  )
+
+#define TPI_ITATBCTR2_ATREADY1_Pos          0U
+#define TPI_ITATBCTR2_ATREADY1_Msk         (0x1UL  )
+
+#define TPI_FIFO1_ITM_ATVALID_Pos          29U
+#define TPI_FIFO1_ITM_ATVALID_Msk          (0x1UL << TPI_FIFO1_ITM_ATVALID_Pos)
+
+#define TPI_FIFO1_ITM_bytecount_Pos        27U
+#define TPI_FIFO1_ITM_bytecount_Msk        (0x3UL << TPI_FIFO1_ITM_bytecount_Pos)
+
+#define TPI_FIFO1_ETM_ATVALID_Pos          26U
+#define TPI_FIFO1_ETM_ATVALID_Msk          (0x1UL << TPI_FIFO1_ETM_ATVALID_Pos)
+
+#define TPI_FIFO1_ETM_bytecount_Pos        24U
+#define TPI_FIFO1_ETM_bytecount_Msk        (0x3UL << TPI_FIFO1_ETM_bytecount_Pos)
+
+#define TPI_FIFO1_ITM2_Pos                 16U
+#define TPI_FIFO1_ITM2_Msk                 (0xFFUL << TPI_FIFO1_ITM2_Pos)
+
+#define TPI_FIFO1_ITM1_Pos                  8U
+#define TPI_FIFO1_ITM1_Msk                 (0xFFUL << TPI_FIFO1_ITM1_Pos)
+
+#define TPI_FIFO1_ITM0_Pos                  0U
+#define TPI_FIFO1_ITM0_Msk                 (0xFFUL  )
+
+#define TPI_ITATBCTR0_ATREADY2_Pos          0U
+#define TPI_ITATBCTR0_ATREADY2_Msk         (0x1UL  )
+
+#define TPI_ITATBCTR0_ATREADY1_Pos          0U
+#define TPI_ITATBCTR0_ATREADY1_Msk         (0x1UL  )
+
+#define TPI_ITCTRL_Mode_Pos                 0U
+#define TPI_ITCTRL_Mode_Msk                (0x3UL  )
+
+#define TPI_DEVID_NRZVALID_Pos             11U
+#define TPI_DEVID_NRZVALID_Msk             (0x1UL << TPI_DEVID_NRZVALID_Pos)
+
+#define TPI_DEVID_MANCVALID_Pos            10U
+#define TPI_DEVID_MANCVALID_Msk            (0x1UL << TPI_DEVID_MANCVALID_Pos)
+
+#define TPI_DEVID_PTINVALID_Pos             9U
+#define TPI_DEVID_PTINVALID_Msk            (0x1UL << TPI_DEVID_PTINVALID_Pos)
+
+#define TPI_DEVID_MinBufSz_Pos              6U
+#define TPI_DEVID_MinBufSz_Msk             (0x7UL << TPI_DEVID_MinBufSz_Pos)
+
+#define TPI_DEVID_AsynClkIn_Pos             5U
+#define TPI_DEVID_AsynClkIn_Msk            (0x1UL << TPI_DEVID_AsynClkIn_Pos)
+
+#define TPI_DEVID_NrTraceInput_Pos          0U
+#define TPI_DEVID_NrTraceInput_Msk         (0x1FUL  )
+
+#define TPI_DEVTYPE_SubType_Pos             4U
+#define TPI_DEVTYPE_SubType_Msk            (0xFUL  )
+
+#define TPI_DEVTYPE_MajorType_Pos           0U
+#define TPI_DEVTYPE_MajorType_Msk          (0xFUL << TPI_DEVTYPE_MajorType_Pos)
+
+#if defined (__MPU_PRESENT) && (__MPU_PRESENT == 1U)
+
+typedef struct
+{
+  __IM  uint32_t TYPE;                   /* Décalage 0x000 (R/ ) */
+  __IOM uint32_t CTRL;                   /* Décalage 0x004 (R/W) */
+  __IOM uint32_t RNR;                    /* Décalage 0x008 (R/W) */
+  __IOM uint32_t RBAR;                   /* Décalage 0x00C (R/W) */
+  __IOM uint32_t RASR;                   /* Décalage 0x010 (R/W) */
+  __IOM uint32_t RBAR_A1;                /* Décalage 0x014 (R/W) */
+  __IOM uint32_t RASR_A1;                /* Décalage 0x018 (R/W) */
+  __IOM uint32_t RBAR_A2;                /* Décalage 0x01C (R/W) */
+  __IOM uint32_t RASR_A2;                /* Décalage 0x020 (R/W) */
+  __IOM uint32_t RBAR_A3;                /* Décalage 0x024 (R/W) */
+  __IOM uint32_t RASR_A3;                /* Décalage 0x028 (R/W) */
+} MPU_Type;
+
+#define MPU_TYPE_RALIASES                  4U
+
+#define MPU_TYPE_IREGION_Pos               16U
+#define MPU_TYPE_IREGION_Msk               (0xFFUL << MPU_TYPE_IREGION_Pos)
+
+#define MPU_TYPE_DREGION_Pos                8U
+#define MPU_TYPE_DREGION_Msk               (0xFFUL << MPU_TYPE_DREGION_Pos)
+
+#define MPU_TYPE_SEPARATE_Pos               0U
+#define MPU_TYPE_SEPARATE_Msk              (1UL  )
+
+#define MPU_CTRL_PRIVDEFENA_Pos             2U
+#define MPU_CTRL_PRIVDEFENA_Msk            (1UL << MPU_CTRL_PRIVDEFENA_Pos)
+
+#define MPU_CTRL_HFNMIENA_Pos               1U
+#define MPU_CTRL_HFNMIENA_Msk              (1UL << MPU_CTRL_HFNMIENA_Pos)
+
+#define MPU_CTRL_ENABLE_Pos                 0U
+#define MPU_CTRL_ENABLE_Msk                (1UL  )
+
+#define MPU_RNR_REGION_Pos                  0U
+#define MPU_RNR_REGION_Msk                 (0xFFUL  )
+
+#define MPU_RBAR_ADDR_Pos                   5U
+#define MPU_RBAR_ADDR_Msk                  (0x7FFFFFFUL << MPU_RBAR_ADDR_Pos)
+
+#define MPU_RBAR_VALID_Pos                  4U
+#define MPU_RBAR_VALID_Msk                 (1UL << MPU_RBAR_VALID_Pos)
+
+#define MPU_RBAR_REGION_Pos                 0U
+#define MPU_RBAR_REGION_Msk                (0xFUL  )
+
+#define MPU_RASR_ATTRS_Pos                 16U
+#define MPU_RASR_ATTRS_Msk                 (0xFFFFUL << MPU_RASR_ATTRS_Pos)
+
+#define MPU_RASR_XN_Pos                    28U
+#define MPU_RASR_XN_Msk                    (1UL << MPU_RASR_XN_Pos)
+
+#define MPU_RASR_AP_Pos                    24U
+#define MPU_RASR_AP_Msk                    (0x7UL << MPU_RASR_AP_Pos)
+
+#define MPU_RASR_TEX_Pos                   19U
+#define MPU_RASR_TEX_Msk                   (0x7UL << MPU_RASR_TEX_Pos)
+
+#define MPU_RASR_S_Pos                     18U
+#define MPU_RASR_S_Msk                     (1UL << MPU_RASR_S_Pos)
+
+#define MPU_RASR_C_Pos                     17U
+#define MPU_RASR_C_Msk                     (1UL << MPU_RASR_C_Pos)
+
+#define MPU_RASR_B_Pos                     16U
+#define MPU_RASR_B_Msk                     (1UL << MPU_RASR_B_Pos)
+
+#define MPU_RASR_SRD_Pos                    8U
+#define MPU_RASR_SRD_Msk                   (0xFFUL << MPU_RASR_SRD_Pos)
+
+#define MPU_RASR_SIZE_Pos                   1U
+#define MPU_RASR_SIZE_Msk                  (0x1FUL << MPU_RASR_SIZE_Pos)
+
+#define MPU_RASR_ENABLE_Pos                 0U
+#define MPU_RASR_ENABLE_Msk                (1UL  )
+
+#endif /* defined (__MPU_PRESENT) && (__MPU_PRESENT == 1U) */
+
+typedef struct
+{
+        uint32_t RESERVED0[1U];
+  __IOM uint32_t FPCCR;                  /* Décalage 0x004 (R/W) */
+  __IOM uint32_t FPCAR;                  /* Décalage 0x008 (R/W) */
+  __IOM uint32_t FPDSCR;                 /* Décalage 0x00C (R/W) */
+  __IM  uint32_t MVFR0;                  /* Décalage 0x010 (R/ ) */
+  __IM  uint32_t MVFR1;                  /* Décalage 0x014 (R/ ) */
+  __IM  uint32_t MVFR2;                  /* Décalage 0x018 (R/ ) */
+} FPU_Type;
+
+#define FPU_FPCCR_ASPEN_Pos                31U
+#define FPU_FPCCR_ASPEN_Msk                (1UL << FPU_FPCCR_ASPEN_Pos)
+
+#define FPU_FPCCR_LSPEN_Pos                30U
+#define FPU_FPCCR_LSPEN_Msk                (1UL << FPU_FPCCR_LSPEN_Pos)
+
+#define FPU_FPCCR_MONRDY_Pos                8U
+#define FPU_FPCCR_MONRDY_Msk               (1UL << FPU_FPCCR_MONRDY_Pos)
+
+#define FPU_FPCCR_BFRDY_Pos                 6U
+#define FPU_FPCCR_BFRDY_Msk                (1UL << FPU_FPCCR_BFRDY_Pos)
+
+#define FPU_FPCCR_MMRDY_Pos                 5U
+#define FPU_FPCCR_MMRDY_Msk                (1UL << FPU_FPCCR_MMRDY_Pos)
+
+#define FPU_FPCCR_HFRDY_Pos                 4U
+#define FPU_FPCCR_HFRDY_Msk                (1UL << FPU_FPCCR_HFRDY_Pos)
+
+#define FPU_FPCCR_THREAD_Pos                3U
+#define FPU_FPCCR_THREAD_Msk               (1UL << FPU_FPCCR_THREAD_Pos)
+
+#define FPU_FPCCR_USER_Pos                  1U
+#define FPU_FPCCR_USER_Msk                 (1UL << FPU_FPCCR_USER_Pos)
+
+#define FPU_FPCCR_LSPACT_Pos                0U
+#define FPU_FPCCR_LSPACT_Msk               (1UL  )
+
+#define FPU_FPCAR_ADDRESS_Pos               3U
+#define FPU_FPCAR_ADDRESS_Msk              (0x1FFFFFFFUL << FPU_FPCAR_ADDRESS_Pos)
+
+#define FPU_FPDSCR_AHP_Pos                 26U
+#define FPU_FPDSCR_AHP_Msk                 (1UL << FPU_FPDSCR_AHP_Pos)
+
+#define FPU_FPDSCR_DN_Pos                  25U
+#define FPU_FPDSCR_DN_Msk                  (1UL << FPU_FPDSCR_DN_Pos)
+
+#define FPU_FPDSCR_FZ_Pos                  24U
+#define FPU_FPDSCR_FZ_Msk                  (1UL << FPU_FPDSCR_FZ_Pos)
+
+#define FPU_FPDSCR_RMode_Pos               22U
+#define FPU_FPDSCR_RMode_Msk               (3UL << FPU_FPDSCR_RMode_Pos)
+
+#define FPU_MVFR0_FP_rounding_modes_Pos    28U
+#define FPU_MVFR0_FP_rounding_modes_Msk    (0xFUL << FPU_MVFR0_FP_rounding_modes_Pos)
+
+#define FPU_MVFR0_Short_vectors_Pos        24U
+#define FPU_MVFR0_Short_vectors_Msk        (0xFUL << FPU_MVFR0_Short_vectors_Pos)
+
+#define FPU_MVFR0_Square_root_Pos          20U
+#define FPU_MVFR0_Square_root_Msk          (0xFUL << FPU_MVFR0_Square_root_Pos)
+
+#define FPU_MVFR0_Divide_Pos               16U
+#define FPU_MVFR0_Divide_Msk               (0xFUL << FPU_MVFR0_Divide_Pos)
+
+#define FPU_MVFR0_FP_excep_trapping_Pos    12U
+#define FPU_MVFR0_FP_excep_trapping_Msk    (0xFUL << FPU_MVFR0_FP_excep_trapping_Pos)
+
+#define FPU_MVFR0_Double_precision_Pos      8U
+#define FPU_MVFR0_Double_precision_Msk     (0xFUL << FPU_MVFR0_Double_precision_Pos)
+
+#define FPU_MVFR0_Single_precision_Pos      4U
+#define FPU_MVFR0_Single_precision_Msk     (0xFUL << FPU_MVFR0_Single_precision_Pos)
+
+#define FPU_MVFR0_A_SIMD_registers_Pos      0U
+#define FPU_MVFR0_A_SIMD_registers_Msk     (0xFUL  )
+
+#define FPU_MVFR1_FP_fused_MAC_Pos         28U
+#define FPU_MVFR1_FP_fused_MAC_Msk         (0xFUL << FPU_MVFR1_FP_fused_MAC_Pos)
+
+#define FPU_MVFR1_FP_HPFP_Pos              24U
+#define FPU_MVFR1_FP_HPFP_Msk              (0xFUL << FPU_MVFR1_FP_HPFP_Pos)
+
+#define FPU_MVFR1_D_NaN_mode_Pos            4U
+#define FPU_MVFR1_D_NaN_mode_Msk           (0xFUL << FPU_MVFR1_D_NaN_mode_Pos)
+
+#define FPU_MVFR1_FtZ_mode_Pos              0U
+#define FPU_MVFR1_FtZ_mode_Msk             (0xFUL  )
+
+#define FPU_MVFR2_VFP_Misc_Pos              4U
+#define FPU_MVFR2_VFP_Misc_Msk             (0xFUL << FPU_MVFR2_VFP_Misc_Pos)
+
+typedef struct
+{
+  __IOM uint32_t DHCSR;                  /* Décalage 0x000 (R/W) */
+  __OM  uint32_t DCRSR;                  /* Décalage 0x004 ( /W) */
+  __IOM uint32_t DCRDR;                  /* Décalage 0x008 (R/W) */
+  __IOM uint32_t DEMCR;                  /* Décalage 0x00C (R/W) */
+} CoreDebug_Type;
+
+#define CoreDebug_DHCSR_DBGKEY_Pos         16U
+#define CoreDebug_DHCSR_DBGKEY_Msk         (0xFFFFUL << CoreDebug_DHCSR_DBGKEY_Pos)
+
+#define CoreDebug_DHCSR_S_RESET_ST_Pos     25U
+#define CoreDebug_DHCSR_S_RESET_ST_Msk     (1UL << CoreDebug_DHCSR_S_RESET_ST_Pos)
+
+#define CoreDebug_DHCSR_S_RETIRE_ST_Pos    24U
+#define CoreDebug_DHCSR_S_RETIRE_ST_Msk    (1UL << CoreDebug_DHCSR_S_RETIRE_ST_Pos)
+
+#define CoreDebug_DHCSR_S_LOCKUP_Pos       19U
+#define CoreDebug_DHCSR_S_LOCKUP_Msk       (1UL << CoreDebug_DHCSR_S_LOCKUP_Pos)
+
+#define CoreDebug_DHCSR_S_SLEEP_Pos        18U
+#define CoreDebug_DHCSR_S_SLEEP_Msk        (1UL << CoreDebug_DHCSR_S_SLEEP_Pos)
+
+#define CoreDebug_DHCSR_S_HALT_Pos         17U
+#define CoreDebug_DHCSR_S_HALT_Msk         (1UL << CoreDebug_DHCSR_S_HALT_Pos)
+
+#define CoreDebug_DHCSR_S_REGRDY_Pos       16U
+#define CoreDebug_DHCSR_S_REGRDY_Msk       (1UL << CoreDebug_DHCSR_S_REGRDY_Pos)
+
+#define CoreDebug_DHCSR_C_SNAPSTALL_Pos     5U
+#define CoreDebug_DHCSR_C_SNAPSTALL_Msk    (1UL << CoreDebug_DHCSR_C_SNAPSTALL_Pos)
+
+#define CoreDebug_DHCSR_C_MASKINTS_Pos      3U
+#define CoreDebug_DHCSR_C_MASKINTS_Msk     (1UL << CoreDebug_DHCSR_C_MASKINTS_Pos)
+
+#define CoreDebug_DHCSR_C_STEP_Pos          2U
+#define CoreDebug_DHCSR_C_STEP_Msk         (1UL << CoreDebug_DHCSR_C_STEP_Pos)
+
+#define CoreDebug_DHCSR_C_HALT_Pos          1U
+#define CoreDebug_DHCSR_C_HALT_Msk         (1UL << CoreDebug_DHCSR_C_HALT_Pos)
+
+#define CoreDebug_DHCSR_C_DEBUGEN_Pos       0U
+#define CoreDebug_DHCSR_C_DEBUGEN_Msk      (1UL  )
+
+#define CoreDebug_DCRSR_REGWnR_Pos         16U
+#define CoreDebug_DCRSR_REGWnR_Msk         (1UL << CoreDebug_DCRSR_REGWnR_Pos)
+
+#define CoreDebug_DCRSR_REGSEL_Pos          0U
+#define CoreDebug_DCRSR_REGSEL_Msk         (0x1FUL  )
+
+#define CoreDebug_DEMCR_TRCENA_Pos         24U
+#define CoreDebug_DEMCR_TRCENA_Msk         (1UL << CoreDebug_DEMCR_TRCENA_Pos)
+
+#define CoreDebug_DEMCR_MON_REQ_Pos        19U
+#define CoreDebug_DEMCR_MON_REQ_Msk        (1UL << CoreDebug_DEMCR_MON_REQ_Pos)
+
+#define CoreDebug_DEMCR_MON_STEP_Pos       18U
+#define CoreDebug_DEMCR_MON_STEP_Msk       (1UL << CoreDebug_DEMCR_MON_STEP_Pos)
+
+#define CoreDebug_DEMCR_MON_PEND_Pos       17U
+#define CoreDebug_DEMCR_MON_PEND_Msk       (1UL << CoreDebug_DEMCR_MON_PEND_Pos)
+
+#define CoreDebug_DEMCR_MON_EN_Pos         16U
+#define CoreDebug_DEMCR_MON_EN_Msk         (1UL << CoreDebug_DEMCR_MON_EN_Pos)
+
+#define CoreDebug_DEMCR_VC_HARDERR_Pos     10U
+#define CoreDebug_DEMCR_VC_HARDERR_Msk     (1UL << CoreDebug_DEMCR_VC_HARDERR_Pos)
+
+#define CoreDebug_DEMCR_VC_INTERR_Pos       9U
+#define CoreDebug_DEMCR_VC_INTERR_Msk      (1UL << CoreDebug_DEMCR_VC_INTERR_Pos)
+
+#define CoreDebug_DEMCR_VC_BUSERR_Pos       8U
+#define CoreDebug_DEMCR_VC_BUSERR_Msk      (1UL << CoreDebug_DEMCR_VC_BUSERR_Pos)
+
+#define CoreDebug_DEMCR_VC_STATERR_Pos      7U
+#define CoreDebug_DEMCR_VC_STATERR_Msk     (1UL << CoreDebug_DEMCR_VC_STATERR_Pos)
+
+#define CoreDebug_DEMCR_VC_CHKERR_Pos       6U
+#define CoreDebug_DEMCR_VC_CHKERR_Msk      (1UL << CoreDebug_DEMCR_VC_CHKERR_Pos)
+
+#define CoreDebug_DEMCR_VC_NOCPERR_Pos      5U
+#define CoreDebug_DEMCR_VC_NOCPERR_Msk     (1UL << CoreDebug_DEMCR_VC_NOCPERR_Pos)
+
+#define CoreDebug_DEMCR_VC_MMERR_Pos        4U
+#define CoreDebug_DEMCR_VC_MMERR_Msk       (1UL << CoreDebug_DEMCR_VC_MMERR_Pos)
+
+#define CoreDebug_DEMCR_VC_CORERESET_Pos    0U
+#define CoreDebug_DEMCR_VC_CORERESET_Msk   (1UL  )
+
+/* Masque et décalage du champ uint32_t */
+#define _VAL2FLD(field, value)    (((uint32_t)(value) << field ## _Pos) & field ## _Msk)
+
+/* Extraction du champ depuis un registre uint32_t */
+#define _FLD2VAL(field, value)    (((uint32_t)(value) & field ## _Msk) >> field ## _Pos)
+
+#define SCS_BASE            (0xE000E000UL)
+#define ITM_BASE            (0xE0000000UL)
+#define DWT_BASE            (0xE0001000UL)
+#define TPI_BASE            (0xE0040000UL)
+#define CoreDebug_BASE      (0xE000EDF0UL)
+#define SysTick_BASE        (SCS_BASE +  0x0010UL)
+#define NVIC_BASE           (SCS_BASE +  0x0100UL)
+#define SCB_BASE            (SCS_BASE +  0x0D00UL)
+
+#define SCnSCB              ((SCnSCB_Type    *)     SCS_BASE      )
+#define SCB                 ((SCB_Type       *)     SCB_BASE      )
+#define SysTick             ((SysTick_Type   *)     SysTick_BASE  )
+#define NVIC                ((NVIC_Type      *)     NVIC_BASE     )
+#define ITM                 ((ITM_Type       *)     ITM_BASE      )
+#define DWT                 ((DWT_Type       *)     DWT_BASE      )
+#define TPI                 ((TPI_Type       *)     TPI_BASE      )
+#define CoreDebug           ((CoreDebug_Type *)     CoreDebug_BASE)
+
+#if defined (__MPU_PRESENT) && (__MPU_PRESENT == 1U)
+  #define MPU_BASE          (SCS_BASE +  0x0D90UL)
+  #define MPU               ((MPU_Type       *)     MPU_BASE      )
+#endif
+
+#define FPU_BASE            (SCS_BASE +  0x0F30UL)
+#define FPU                 ((FPU_Type       *)     FPU_BASE      )
+
+#define ITM_TCR_TraceBusID_Pos           (ITM_TCR_TRACEBUSID_Pos)     /* Alias obsolète : ITM_TCR_TraceBusID_Pos */
+#define ITM_TCR_TraceBusID_Msk           (ITM_TCR_TRACEBUSID_Msk)     /* Alias obsolète : ITM_TCR_TraceBusID_Msk */
+
+#define ITM_TCR_TSPrescale_Pos           (ITM_TCR_TSPRESCALE_Pos)     /* Alias obsolète : ITM_TCR_TSPrescale_Pos */
+#define ITM_TCR_TSPrescale_Msk           (ITM_TCR_TSPRESCALE_Msk)     /* Alias obsolète : ITM_TCR_TSPrescale_Msk */
+
+#define ITM_LSR_ByteAcc_Pos              (ITM_LSR_BYTEACC_Pos)        /* Alias obsolète : ITM_LSR_ByteAcc_Pos */
+#define ITM_LSR_ByteAcc_Msk              (ITM_LSR_BYTEACC_Msk)        /* Alias obsolète : ITM_LSR_ByteAcc_Msk */
+
+#define ITM_LSR_Access_Pos               (ITM_LSR_ACCESS_Pos)         /* Alias obsolète : ITM_LSR_Access_Pos */
+#define ITM_LSR_Access_Msk               (ITM_LSR_ACCESS_Msk)         /* Alias obsolète : ITM_LSR_Access_Msk */
+
+#define ITM_LSR_Present_Pos              (ITM_LSR_PRESENT_Pos)        /* Alias obsolète : ITM_LSR_Present_Pos */
+#define ITM_LSR_Present_Msk              (ITM_LSR_PRESENT_Msk)        /* Alias obsolète : ITM_LSR_Present_Msk */
+
+#ifdef CMSIS_NVIC_VIRTUAL
+  #ifndef CMSIS_NVIC_VIRTUAL_HEADER_FILE
+    #define CMSIS_NVIC_VIRTUAL_HEADER_FILE "cmsis_nvic_virtual.h"
+  #endif
+  #include CMSIS_NVIC_VIRTUAL_HEADER_FILE
+#else
+  #define NVIC_SetPriorityGrouping    __NVIC_SetPriorityGrouping
+  #define NVIC_GetPriorityGrouping    __NVIC_GetPriorityGrouping
+  #define NVIC_EnableIRQ              __NVIC_EnableIRQ
+  #define NVIC_GetEnableIRQ           __NVIC_GetEnableIRQ
+  #define NVIC_DisableIRQ             __NVIC_DisableIRQ
+  #define NVIC_GetPendingIRQ          __NVIC_GetPendingIRQ
+  #define NVIC_SetPendingIRQ          __NVIC_SetPendingIRQ
+  #define NVIC_ClearPendingIRQ        __NVIC_ClearPendingIRQ
+  #define NVIC_GetActive              __NVIC_GetActive
+  #define NVIC_SetPriority            __NVIC_SetPriority
+  #define NVIC_GetPriority            __NVIC_GetPriority
+  #define NVIC_SystemReset            __NVIC_SystemReset
+#endif
+
+#ifdef CMSIS_VECTAB_VIRTUAL
+  #ifndef CMSIS_VECTAB_VIRTUAL_HEADER_FILE
+    #define CMSIS_VECTAB_VIRTUAL_HEADER_FILE "cmsis_vectab_virtual.h"
+  #endif
+  #include CMSIS_VECTAB_VIRTUAL_HEADER_FILE
+#else
+  #define NVIC_SetVector              __NVIC_SetVector
+  #define NVIC_GetVector              __NVIC_GetVector
+#endif
+
+#define NVIC_USER_IRQ_OFFSET          16
+
+/* EXC_RETURN sauvegardé dans LR à l’entrée d’exception */
+#define EXC_RETURN_HANDLER         (0xFFFFFFF1UL)     /* Retour Handler via MSP */
+#define EXC_RETURN_THREAD_MSP      (0xFFFFFFF9UL)     /* Retour Thread via MSP */
+#define EXC_RETURN_THREAD_PSP      (0xFFFFFFFDUL)     /* Retour Thread via PSP */
+#define EXC_RETURN_HANDLER_FPU     (0xFFFFFFE1UL)     /* Retour Handler via MSP ; restauration état FPU */
+#define EXC_RETURN_THREAD_MSP_FPU  (0xFFFFFFE9UL)     /* Retour Thread via MSP ; restauration état FPU */
+#define EXC_RETURN_THREAD_PSP_FPU  (0xFFFFFFEDUL)     /* Retour Thread via PSP ; restauration état FPU */
+
+/* PRIGROUP [0,7], réduit selon __NVIC_PRIO_BITS */
+__STATIC_INLINE void __NVIC_SetPriorityGrouping(uint32_t PriorityGroup)
+{
+  uint32_t reg_value;
+  uint32_t PriorityGroupTmp = (PriorityGroup & (uint32_t)0x07UL);             /* Valeurs utilisées limitées à [0,7] */
+
+  reg_value  =  SCB->AIRCR;
+  reg_value &= ~((uint32_t)(SCB_AIRCR_VECTKEY_Msk | SCB_AIRCR_PRIGROUP_Msk));
+  reg_value  =  (reg_value                                   |
+                ((uint32_t)0x5FAUL << SCB_AIRCR_VECTKEY_Pos) |
+                (PriorityGroupTmp << SCB_AIRCR_PRIGROUP_Pos)  );              /* Insertion clé d’écriture et groupe de priorité */
+  SCB->AIRCR =  reg_value;
+}
+
+/* Lecture PRIGROUP dans AIRCR[10:8] */
+__STATIC_INLINE uint32_t __NVIC_GetPriorityGrouping(void)
+{
+  return ((uint32_t)((SCB->AIRCR & SCB_AIRCR_PRIGROUP_Msk) >> SCB_AIRCR_PRIGROUP_Pos));
+}
+
+/* IRQn positif ou nul requis */
+__STATIC_INLINE void __NVIC_EnableIRQ(IRQn_Type IRQn)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    __COMPILER_BARRIER();
+    NVIC->ISER[(((uint32_t)IRQn) >> 5UL)] = (uint32_t)(1UL << (((uint32_t)IRQn) & 0x1FUL));
+    __COMPILER_BARRIER();
+  }
+}
+
+/* IRQn >= 0 ; retour 1 si activé */
+__STATIC_INLINE uint32_t __NVIC_GetEnableIRQ(IRQn_Type IRQn)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    return((uint32_t)(((NVIC->ISER[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+  }
+  else
+  {
+    return(0U);
+  }
+}
+
+/* IRQn positif ou nul requis */
+__STATIC_INLINE void __NVIC_DisableIRQ(IRQn_Type IRQn)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    NVIC->ICER[(((uint32_t)IRQn) >> 5UL)] = (uint32_t)(1UL << (((uint32_t)IRQn) & 0x1FUL));
+    __DSB();
+    __ISB();
+  }
+}
+
+/* IRQn >= 0 ; retour 1 si pending */
+__STATIC_INLINE uint32_t __NVIC_GetPendingIRQ(IRQn_Type IRQn)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    return((uint32_t)(((NVIC->ISPR[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+  }
+  else
+  {
+    return(0U);
+  }
+}
+
+/* IRQn positif ou nul requis */
+__STATIC_INLINE void __NVIC_SetPendingIRQ(IRQn_Type IRQn)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    NVIC->ISPR[(((uint32_t)IRQn) >> 5UL)] = (uint32_t)(1UL << (((uint32_t)IRQn) & 0x1FUL));
+  }
+}
+
+/* IRQn positif ou nul requis */
+__STATIC_INLINE void __NVIC_ClearPendingIRQ(IRQn_Type IRQn)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    NVIC->ICPR[(((uint32_t)IRQn) >> 5UL)] = (uint32_t)(1UL << (((uint32_t)IRQn) & 0x1FUL));
+  }
+}
+
+/* IRQn >= 0 ; retour 1 si actif */
+__STATIC_INLINE uint32_t __NVIC_GetActive(IRQn_Type IRQn)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    return((uint32_t)(((NVIC->IABR[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+  }
+  else
+  {
+    return(0U);
+  }
+}
+
+/* IRQn négatif : exception ; priorité parfois immuable */
+__STATIC_INLINE void __NVIC_SetPriority(IRQn_Type IRQn, uint32_t priority)
+{
+  if ((int32_t)(IRQn) >= 0)
+  {
+    NVIC->IP[((uint32_t)IRQn)]               = (uint8_t)((priority << (8U - __NVIC_PRIO_BITS)) & (uint32_t)0xFFUL);
+  }
+  else
+  {
+    SCB->SHP[(((uint32_t)IRQn) & 0xFUL)-4UL] = (uint8_t)((priority << (8U - __NVIC_PRIO_BITS)) & (uint32_t)0xFFUL);
+  }
+}
+
+/* IRQn négatif : exception ; priorité alignée aux bits implémentés */
+__STATIC_INLINE uint32_t __NVIC_GetPriority(IRQn_Type IRQn)
+{
+
+  if ((int32_t)(IRQn) >= 0)
+  {
+    return(((uint32_t)NVIC->IP[((uint32_t)IRQn)]               >> (8U - __NVIC_PRIO_BITS)));
+  }
+  else
+  {
+    return(((uint32_t)SCB->SHP[(((uint32_t)IRQn) & 0xFUL)-4UL] >> (8U - __NVIC_PRIO_BITS)));
+  }
+}
+
+/* Priorité/subpriorité depuis 0 ; groupe réduit si nécessaire */
+__STATIC_INLINE uint32_t NVIC_EncodePriority (uint32_t PriorityGroup, uint32_t PreemptPriority, uint32_t SubPriority)
+{
+  uint32_t PriorityGroupTmp = (PriorityGroup & (uint32_t)0x07UL);   /* Valeurs utilisées limitées à [0,7] */
+  uint32_t PreemptPriorityBits;
+  uint32_t SubPriorityBits;
+
+  PreemptPriorityBits = ((7UL - PriorityGroupTmp) > (uint32_t)(__NVIC_PRIO_BITS)) ? (uint32_t)(__NVIC_PRIO_BITS) : (uint32_t)(7UL - PriorityGroupTmp);
+  SubPriorityBits     = ((PriorityGroupTmp + (uint32_t)(__NVIC_PRIO_BITS)) < (uint32_t)7UL) ? (uint32_t)0UL : (uint32_t)((PriorityGroupTmp - 7UL) + (uint32_t)(__NVIC_PRIO_BITS));
+
+  return (
+           ((PreemptPriority & (uint32_t)((1UL << (PreemptPriorityBits)) - 1UL)) << SubPriorityBits) |
+           ((SubPriority     & (uint32_t)((1UL << (SubPriorityBits    )) - 1UL)))
+         );
+}
+
+/* Priorité/subpriorité depuis 0 ; groupe réduit si nécessaire */
+__STATIC_INLINE void NVIC_DecodePriority (uint32_t Priority, uint32_t PriorityGroup, uint32_t* const pPreemptPriority, uint32_t* const pSubPriority)
+{
+  uint32_t PriorityGroupTmp = (PriorityGroup & (uint32_t)0x07UL);   /* Valeurs utilisées limitées à [0,7] */
+  uint32_t PreemptPriorityBits;
+  uint32_t SubPriorityBits;
+
+  PreemptPriorityBits = ((7UL - PriorityGroupTmp) > (uint32_t)(__NVIC_PRIO_BITS)) ? (uint32_t)(__NVIC_PRIO_BITS) : (uint32_t)(7UL - PriorityGroupTmp);
+  SubPriorityBits     = ((PriorityGroupTmp + (uint32_t)(__NVIC_PRIO_BITS)) < (uint32_t)7UL) ? (uint32_t)0UL : (uint32_t)((PriorityGroupTmp - 7UL) + (uint32_t)(__NVIC_PRIO_BITS));
+
+  *pPreemptPriority = (Priority >> SubPriorityBits) & (uint32_t)((1UL << (PreemptPriorityBits)) - 1UL);
+  *pSubPriority     = (Priority                   ) & (uint32_t)((1UL << (SubPriorityBits    )) - 1UL);
+}
+
+/* VTOR relocalisé en SRAM requis ; IRQn négatif : exception */
+__STATIC_INLINE void __NVIC_SetVector(IRQn_Type IRQn, uint32_t vector)
+{
+  uint32_t *vectors = (uint32_t *)SCB->VTOR;
+  vectors[(int32_t)IRQn + NVIC_USER_IRQ_OFFSET] = vector;
+  /* ARM Note 321 : barrière architecturale inutile sur M4 */
+}
+
+/* IRQn négatif : exception ; retour adresse handler */
+__STATIC_INLINE uint32_t __NVIC_GetVector(IRQn_Type IRQn)
+{
+  uint32_t *vectors = (uint32_t *)SCB->VTOR;
+  return vectors[(int32_t)IRQn + NVIC_USER_IRQ_OFFSET];
+}
+
+__NO_RETURN __STATIC_INLINE void __NVIC_SystemReset(void)
+{
+  __DSB();                                                          /* Attente des accès mémoire et writes avant reset */
+  SCB->AIRCR  = (uint32_t)((0x5FAUL << SCB_AIRCR_VECTKEY_Pos)    |
+                           (SCB->AIRCR & SCB_AIRCR_PRIGROUP_Msk) |
+                            SCB_AIRCR_SYSRESETREQ_Msk    );         /* Conservation du groupe de priorité */
+  __DSB();
+
+  for(;;)
+  {
+    __NOP();
+  }
+}
+
+#if defined (__MPU_PRESENT) && (__MPU_PRESENT == 1U)
+
+#include "mpu_armv7.h"
+
+#endif
+
+/* FPU : 0 absent, 1 simple, 2 simple/double */
+__STATIC_INLINE uint32_t SCB_GetFPUType(void)
+{
+  uint32_t mvfr0;
+
+  mvfr0 = FPU->MVFR0;
+  if      ((mvfr0 & (FPU_MVFR0_Single_precision_Msk | FPU_MVFR0_Double_precision_Msk)) == 0x020U)
+  {
+    return 1U;
+  }
+  else
+  {
+    return 0U;
+  }
+}
+
+#if defined (__Vendor_SysTickConfig) && (__Vendor_SysTickConfig == 0U)
+
+/* SysTick : 0 succès ; implémentation vendor si __Vendor_SysTickConfig=1 */
+__STATIC_INLINE uint32_t SysTick_Config(uint32_t ticks)
+{
+  if ((ticks - 1UL) > SysTick_LOAD_RELOAD_Msk)
+  {
+    return (1UL);                                                   /* Valeur reload impossible */
+  }
+
+  SysTick->LOAD  = (uint32_t)(ticks - 1UL);
+  NVIC_SetPriority (SysTick_IRQn, (1UL << __NVIC_PRIO_BITS) - 1UL);
+  SysTick->VAL   = 0UL;
+  SysTick->CTRL  = SysTick_CTRL_CLKSOURCE_Msk |
+                   SysTick_CTRL_TICKINT_Msk   |
+                   SysTick_CTRL_ENABLE_Msk;
+  return (0UL);
+}
+
+#endif
+
+extern volatile int32_t ITM_RxBuffer;                              /* Buffer externe de réception */
+#define                 ITM_RXBUFFER_EMPTY  ((int32_t)0x5AA55AA5U) /* Sentinelle ITM_RxBuffer prêt pour le prochain caractère */
+
+/* ITM canal 0 : bloque seulement avec debugger actif */
+__STATIC_INLINE uint32_t ITM_SendChar (uint32_t ch)
+{
+  if (((ITM->TCR & ITM_TCR_ITMENA_Msk) != 0UL) &&
+      ((ITM->TER & 1UL               ) != 0UL)   )
+  {
+    while (ITM->PORT[0U].u32 == 0UL)
+    {
+      __NOP();
+    }
+    ITM->PORT[0U].u8 = (uint8_t)ch;
+  }
+  return (ch);
+}
+
+/* Lecture ITM_RxBuffer ; -1 si aucune donnée */
+__STATIC_INLINE int32_t ITM_ReceiveChar (void)
+{
+  int32_t ch = -1;
+
+  if (ITM_RxBuffer != ITM_RXBUFFER_EMPTY)
+  {
+    ch = ITM_RxBuffer;
+    ITM_RxBuffer = ITM_RXBUFFER_EMPTY;
+  }
+
+  return (ch);
+}
+
+/* ITM_RxBuffer : 1 si donnée disponible */
+__STATIC_INLINE int32_t ITM_CheckChar (void)
+{
+
+  if (ITM_RxBuffer == ITM_RXBUFFER_EMPTY)
+  {
+    return (0);
+  }
+  else
+  {
+    return (1);
+  }
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
+#endif

@@ -1,0 +1,86 @@
+#pragma once
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#include <core/pubsub.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define RECORD_POWER "power"
+
+typedef struct Power Power;
+
+typedef enum {
+    PowerBootModeNormal,
+    PowerBootModeDfu,
+    PowerBootModeUpdateStart,
+} PowerBootMode;
+
+typedef enum {
+    PowerEventTypeStopCharging,
+    PowerEventTypeStartCharging,
+    PowerEventTypeFullyCharged,
+    PowerEventTypeBatteryLevelChanged,
+} PowerEventType;
+
+typedef union {
+    uint8_t battery_level;
+} PowerEventData;
+
+typedef struct {
+    PowerEventType type;
+    PowerEventData data;
+} PowerEvent;
+
+typedef struct {
+    bool gauge_is_ok;
+    bool is_charging;
+    bool is_shutdown_requested;
+    bool is_otg_enabled;
+
+    float current_charger;
+    float current_gauge;
+
+    float voltage_battery_charge_limit;
+    float voltage_charger;
+    float voltage_gauge;
+    float voltage_vbus;
+
+    uint32_t capacity_remaining;
+    uint32_t capacity_full;
+
+    float temperature_charger;
+    float temperature_gauge;
+
+    uint8_t charge;
+    uint8_t health;
+} PowerInfo;
+
+/** Power off device
+ */
+void power_off(Power* power);
+
+/** Reboot device
+ *
+ * @param mode      PowerBootMode
+ */
+void power_reboot(Power* power, PowerBootMode mode);
+
+void power_get_info(Power* power, PowerInfo* info);
+
+FuriPubSub* power_get_pubsub(Power* power);
+
+bool power_is_battery_healthy(Power* power);
+
+void power_enable_low_battery_level_notification(Power* power, bool enable);
+
+void power_enable_otg(Power* power, bool enable);
+
+bool power_is_otg_enabled(Power* power);
+
+#ifdef __cplusplus
+}
+#endif

@@ -1,0 +1,152 @@
+/* Hiérarchie NFC : nouveaux protocoles à rattacher au parent approprié */
+/* Sans parent existant : protocole racine */
+/* ISO14443-3A→4A/Ultralight/Classic ; 3B→4B ; ISO15693→SLIX */
+/* 4A→DESFire/Plus/NTAG4xx/Type4Tag ; Felica/ST25TB racines */
+
+#include "nfc_protocol.h"
+
+#include <furi/furi.h>
+
+/* Protocole racine : parent_protocol=NfcProtocolInvalid */
+
+typedef struct {
+    NfcProtocol parent_protocol; /**< Parent protocol identifier. */
+    size_t children_num;
+    const NfcProtocol* children_protocol;
+} NfcProtocolTreeNode;
+
+static const NfcProtocol nfc_protocol_iso14443_3a_children_protocol[] = {
+    NfcProtocolIso14443_4a,
+    NfcProtocolMfUltralight,
+};
+
+static const NfcProtocol nfc_protocol_iso14443_3b_children_protocol[] = {
+    NfcProtocolIso14443_4b,
+};
+
+static const NfcProtocol nfc_protocol_iso14443_4a_children_protocol[] = {
+    NfcProtocolMfPlus,
+    NfcProtocolMfDesfire,
+    NfcProtocolNtag4xx,
+    NfcProtocolType4Tag,
+};
+
+static const NfcProtocol nfc_protocol_iso15693_3_children_protocol[] = {
+    NfcProtocolSlix,
+};
+
+/* Add new child protocol lists here (if necessary) */
+
+/* Ajouter node à index protocole puis ID dans liste children parent */
+
+static const NfcProtocolTreeNode nfc_protocol_nodes[NfcProtocolNum] = {
+    [NfcProtocolIso14443_3a] =
+        {
+            .parent_protocol = NfcProtocolInvalid,
+            .children_num = COUNT_OF(nfc_protocol_iso14443_3a_children_protocol),
+            .children_protocol = nfc_protocol_iso14443_3a_children_protocol,
+        },
+    [NfcProtocolIso14443_3b] =
+        {
+            .parent_protocol = NfcProtocolInvalid,
+            .children_num = COUNT_OF(nfc_protocol_iso14443_3b_children_protocol),
+            .children_protocol = nfc_protocol_iso14443_3b_children_protocol,
+        },
+    [NfcProtocolIso14443_4a] =
+        {
+            .parent_protocol = NfcProtocolIso14443_3a,
+            .children_num = COUNT_OF(nfc_protocol_iso14443_4a_children_protocol),
+            .children_protocol = nfc_protocol_iso14443_4a_children_protocol,
+        },
+    [NfcProtocolIso14443_4b] =
+        {
+            .parent_protocol = NfcProtocolIso14443_3b,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolIso15693_3] =
+        {
+            .parent_protocol = NfcProtocolInvalid,
+            .children_num = COUNT_OF(nfc_protocol_iso15693_3_children_protocol),
+            .children_protocol = nfc_protocol_iso15693_3_children_protocol,
+        },
+    [NfcProtocolFelica] =
+        {
+            .parent_protocol = NfcProtocolInvalid,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolMfUltralight] =
+        {
+            .parent_protocol = NfcProtocolIso14443_3a,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolMfClassic] =
+        {
+            .parent_protocol = NfcProtocolIso14443_3a,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolMfPlus] =
+        {
+            .parent_protocol = NfcProtocolIso14443_4a,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolMfDesfire] =
+        {
+            .parent_protocol = NfcProtocolIso14443_4a,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolSlix] =
+        {
+            .parent_protocol = NfcProtocolIso15693_3,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolSt25tb] =
+        {
+            .parent_protocol = NfcProtocolInvalid,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolNtag4xx] =
+        {
+            .parent_protocol = NfcProtocolIso14443_4a,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    [NfcProtocolType4Tag] =
+        {
+            .parent_protocol = NfcProtocolIso14443_4a,
+            .children_num = 0,
+            .children_protocol = NULL,
+        },
+    /* Add new protocols here */
+};
+
+NfcProtocol nfc_protocol_get_parent(NfcProtocol protocol) {
+    furi_check(protocol < NfcProtocolNum);
+
+    return nfc_protocol_nodes[protocol].parent_protocol;
+}
+
+bool nfc_protocol_has_parent(NfcProtocol protocol, NfcProtocol parent_protocol) {
+    furi_check(protocol < NfcProtocolNum);
+    furi_check(parent_protocol < NfcProtocolNum);
+
+    bool parent_found = false;
+    const NfcProtocolTreeNode* iter = &nfc_protocol_nodes[protocol];
+
+    while(iter->parent_protocol != NfcProtocolInvalid) {
+        if(iter->parent_protocol == parent_protocol) {
+            parent_found = true;
+            break;
+        }
+        iter = &nfc_protocol_nodes[iter->parent_protocol];
+    }
+
+    return parent_found;
+}

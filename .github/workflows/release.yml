@@ -1,0 +1,175 @@
+name: Weave — build and release
+run-name: Weave build from ${{ github.ref_name }}
+
+# Manually run from GitHub > Actions > Weave > Run workflow.
+# No personal access token, GH_TOKEN or local CLI authentication is required.
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish a GitHub Release after all five builds pass (requires Android signing secrets)
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check consistent version
+        run: python firmware/site_scons/tools/check_version.py
+      - name: Build firmware only (no companion orchestration loop)
+        run: python fbt.py build --firmware-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: build/*.tgz
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Check consistent version
+        run: python firmware/site_scons/tools/check_version.py
+      - name: Prepare Android keystore when configured
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.WEAVE_ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [[ -n "$KEYSTORE_B64" ]]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/weave-release.jks"
+          fi
+      - name: Build Android APK
+        working-directory: apps/android
+        env:
+          WEAVE_ANDROID_KEYSTORE: ${{ runner.temp }}/weave-release.jks
+          WEAVE_ANDROID_STORE_PASSWORD: ${{ secrets.WEAVE_ANDROID_STORE_PASSWORD }}
+          WEAVE_ANDROID_KEY_ALIAS: ${{ secrets.WEAVE_ANDROID_KEY_ALIAS }}
+          WEAVE_ANDROID_KEY_PASSWORD: ${{ secrets.WEAVE_ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -s "$WEAVE_ANDROID_KEYSTORE" && -n "$WEAVE_ANDROID_STORE_PASSWORD" && -n "$WEAVE_ANDROID_KEY_ALIAS" && -n "$WEAVE_ANDROID_KEY_PASSWORD" ]]; then
+            python ../../firmware/site_scons/tools/bootstrap_tools.py gradle --no-daemon --gradle-user-home ../../${{ runner.temp }}/weave-gradle-cache :app:assembleRelease
+            echo "APK_PATH=build/.work/android/app/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+          else
+            if [[ "${{ inputs.publish_release }}" == 'true' ]]; then
+              echo 'Release signing secrets required for publishing.' >&2
+              exit 1
+            fi
+            unset WEAVE_ANDROID_KEYSTORE
+            python ../../firmware/site_scons/tools/bootstrap_tools.py gradle --no-daemon --gradle-user-home ../../${{ runner.temp }}/weave-gradle-cache :app:assembleDebug
+            echo "APK_PATH=build/.work/android/app/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+            echo 'Development build: debug-signed APK (do not publish as final release).'
+          fi
+      - name: Verify Android APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          test -n "$apksigner"
+          "$apksigner" verify --verbose "$APK_PATH"
+      - name: Package APK
+        run: python firmware/site_scons/tools/release_asset.py android --input "$APK_PATH" --output build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: build/*.apk
+          if-no-files-found: error
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows
+          - os: ubuntu-24.04
+            platform: linux
+          - os: macos-14
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check consistent version
+        shell: bash
+        run: python firmware/site_scons/tools/check_version.py
+      - name: Install Electron dependencies
+        shell: bash
+        working-directory: apps/desktop
+        run: npm install --prefer-offline --fetch-retries=5 --fetch-retry-mintimeout=2500 --fetch-retry-maxtimeout=10000 --no-audit --no-fund
+      - name: Build Electron + Vite application
+        shell: bash
+        working-directory: apps/desktop
+        run: npm run build
+      - name: Package desktop application
+        shell: bash
+        working-directory: apps/desktop
+        run: npx electron-builder --publish never --dir --${{ matrix.platform == 'macos' && 'mac' || matrix.platform == 'windows' && 'win' || 'linux' }}
+      - name: Locate and ZIP native Electron application
+        shell: bash
+        run: |
+          python firmware/site_scons/tools/package_electron_ci.py --platform '${{ matrix.platform }}' --output build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: build/*.zip
+          if-no-files-found: error
+
+  publish:
+    if: ${{ inputs.publish_release }}
+    needs: [firmware, android, desktop]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Validate five assets and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python firmware/site_scons/tools/check_version.py
+          version=$(cat VERSION)
+          for file in \
+            "Weave-${version}-firmware.tgz" \
+            "Weave-${version}-android.apk" \
+            "Weave-${version}-windows.zip" \
+            "Weave-${version}-linux.zip" \
+            "Weave-${version}-macos.zip"; do
+            test -s "release/$file" || { echo "Missing $file" >&2; exit 1; }
+          done
+      - name: Publish release (using built-in GITHUB_TOKEN)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          gh release create "v${version}" release/* \
+            --target "$GITHUB_SHA" --title "Weave ${version}" --generate-notes

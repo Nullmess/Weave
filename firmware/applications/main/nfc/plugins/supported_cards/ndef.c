@@ -1,0 +1,1129 @@
+
+/* Plusieurs messages/records NDEF par tag supportés */
+// Parsed types: URI (+ Phone, Mail), Text, BT MAC, Contact, WiFi, Empty, SmartPoster
+
+// Made by @Willy-JL
+// Mifare Ultralight support by @Willy-JL
+// Mifare Classic support by @luu176 & @Willy-JL
+// SLIX support by @Willy-JL
+
+/* Positions arbitraires pour supporter plusieurs protocoles */
+/* Protocoles appellent parse_tlv avec position abstraite */
+
+/* ndef_get remappe position selon layout, en sautant blocs/secteurs */
+
+#include "nfc_supported_card_plugin.h"
+#include <flipper_application.h>
+
+#include <nfc/protocols/mf_ultralight/mf_ultralight.h>
+#include <nfc/protocols/mf_classic/mf_classic.h>
+#include <nfc/protocols/slix/slix.h>
+#include <nfc/protocols/type_4_tag/type_4_tag.h>
+
+#include <bit_lib.h>
+#include <toolbox/pretty_format.h>
+
+#define TAG "NDEF"
+
+#define NDEF_PROTO_INVALID (-1)
+#define NDEF_PROTO_RAW     (0) // For parsing data fed manually
+#define NDEF_PROTO_UL      (1)
+#define NDEF_PROTO_MFC     (2)
+#define NDEF_PROTO_SLIX    (3)
+#define NDEF_PROTO_T4T     (4)
+#define NDEF_PROTO_TOTAL   (5)
+
+#ifndef NDEF_PROTO
+#error Must specify what protocol to use with NDEF_PROTO define!
+#endif
+#if NDEF_PROTO <= NDEF_PROTO_INVALID || NDEF_PROTO >= NDEF_PROTO_TOTAL
+#error Invalid NDEF_PROTO specified!
+#endif
+
+#define NDEF_TITLE(device, parsed_data)    \
+    furi_string_printf(                    \
+        parsed_data,                       \
+        "\e#NDEF Format Data\nCard: %s\n", \
+        nfc_device_get_name(device, NfcDeviceNameTypeFull))
+
+// ---=== structures ===---
+
+// TLV structure:
+// https://docs.nordicsemi.com/bundle/ncs-latest/page/nrfxlib/nfc/doc/type_2_tag.html#data
+typedef enum FURI_PACKED {
+    NdefTlvPadding = 0x00,
+    NdefTlvLockControl = 0x01,
+    NdefTlvMemoryControl = 0x02,
+    NdefTlvNdefMessage = 0x03,
+    NdefTlvProprietary = 0xFD,
+    NdefTlvTerminator = 0xFE,
+} NdefTlv;
+
+// Type Name Format values:
+// https://docs.nordicsemi.com/bundle/ncs-latest/page/nrf/protocols/nfc/index.html#flags-and-tnf
+typedef enum FURI_PACKED {
+    NdefTnfEmpty = 0x00,
+    NdefTnfWellKnownType = 0x01,
+    NdefTnfMediaType = 0x02,
+    NdefTnfAbsoluteUri = 0x03,
+    NdefTnfExternalType = 0x04,
+    NdefTnfUnknown = 0x05,
+    NdefTnfUnchanged = 0x06,
+    NdefTnfReserved = 0x07,
+} NdefTnf;
+
+/* Structure flags et TNF */
+// https://docs.nordicsemi.com/bundle/ncs-latest/page/nrf/protocols/nfc/index.html#flags-and-tnf
+typedef struct FURI_PACKED {
+
+    NdefTnf type_name_format : 3;
+    bool id_length_present   : 1;
+    bool short_record        : 1;
+    bool chunk_flag          : 1;
+    bool message_end         : 1;
+    bool message_begin       : 1;
+} NdefFlagsTnf;
+_Static_assert(sizeof(NdefFlagsTnf) == 1);
+
+// URI payload format:
+// https://learn.adafruit.com/adafruit-pn532-rfid-nfc/ndef#uri-records-0x55-slash-u-607763
+static const char* ndef_uri_prepends[] = {
+    [0x00] = NULL, /* Détecte absence préfixe, identifie schema/type */
+    [0x01] = "http://www.",
+    [0x02] = "https://www.",
+    [0x03] = "http://",
+    [0x04] = "https://",
+    [0x05] = "tel:",
+    [0x06] = "mailto:",
+    [0x07] = "ftp://anonymous:anonymous@",
+    [0x08] = "ftp://ftp.",
+    [0x09] = "ftps://",
+    [0x0A] = "sftp://",
+    [0x0B] = "smb://",
+    [0x0C] = "nfs://",
+    [0x0D] = "ftp://",
+    [0x0E] = "dav://",
+    [0x0F] = "news:",
+    [0x10] = "telnet://",
+    [0x11] = "imap:",
+    [0x12] = "rtsp://",
+    [0x13] = "urn:",
+    [0x14] = "pop:",
+    [0x15] = "sip:",
+    [0x16] = "sips:",
+    [0x17] = "tftp:",
+    [0x18] = "btspp://",
+    [0x19] = "btl2cap://",
+    [0x1A] = "btgoep://",
+    [0x1B] = "tcpobex://",
+    [0x1C] = "irdaobex://",
+    [0x1D] = "file://",
+    [0x1E] = "urn:epc:id:",
+    [0x1F] = "urn:epc:tag:",
+    [0x20] = "urn:epc:pat:",
+    [0x21] = "urn:epc:raw:",
+    [0x22] = "urn:epc:",
+    [0x23] = "urn:nfc:",
+};
+
+// ---=== card memory layout abstraction ===---
+
+/* SmartPoster : limiter récursion NDEF contre stack overflow */
+#define NDEF_SMART_POSTER_MAX_DEPTH (8)
+
+typedef struct {
+    FuriString* output;
+    uint8_t smart_poster_depth;
+#if NDEF_PROTO == NDEF_PROTO_RAW
+    struct {
+        const uint8_t* data;
+        size_t size;
+    } raw;
+#elif NDEF_PROTO == NDEF_PROTO_UL
+    struct {
+        const uint8_t* start;
+        size_t size;
+    } ul;
+#elif NDEF_PROTO == NDEF_PROTO_MFC
+    struct {
+        const MfClassicBlock* blocks;
+        size_t size;
+    } mfc;
+#elif NDEF_PROTO == NDEF_PROTO_SLIX
+    struct {
+        const uint8_t* start;
+        size_t size;
+    } slix;
+#elif NDEF_PROTO == NDEF_PROTO_T4T
+    struct {
+        const uint8_t* data;
+        size_t size;
+    } t4t;
+#endif
+} Ndef;
+
+static bool ndef_get(Ndef* ndef, size_t pos, size_t len, void* buf) {
+#if NDEF_PROTO == NDEF_PROTO_RAW
+
+    if(pos + len > ndef->raw.size) return false;
+    memcpy(buf, ndef->raw.data + pos, len);
+    return true;
+
+#elif NDEF_PROTO == NDEF_PROTO_UL
+
+    /* Mémoire contiguë : remappage sur le pointer données */
+    if(pos + len > ndef->ul.size) return false;
+    memcpy(buf, ndef->ul.start + pos, len);
+    return true;
+
+#elif NDEF_PROTO == NDEF_PROTO_MFC
+
+    /* Positions NDEF abstraites excluent sector trailers/MAD2 */
+    /* Offset des données considérées contiguës */
+
+    if(pos + len > ndef->mfc.size) return false;
+
+    /* 128 blocs initiaux : 32 secteurs, trois data et un trailer */
+    /* Secteur 16 réservé à MAD2, à ignorer */
+    /* 93 blocs data initiaux correspondent à 128 blocs réels */
+    /* 128 blocs finaux : huit secteurs, quinze data et un trailer */
+    /* 120 blocs data finaux correspondent à 128 blocs réels */
+    const size_t real_block_data_offset = pos % MF_CLASSIC_BLOCK_SIZE;
+    size_t small_sector_data_blocks = pos / MF_CLASSIC_BLOCK_SIZE;
+    size_t large_sector_data_blocks = 0;
+    if(small_sector_data_blocks > 93) {
+        large_sector_data_blocks = small_sector_data_blocks - 93;
+        small_sector_data_blocks = 93;
+    }
+
+    const size_t small_sector_block_offset = small_sector_data_blocks % 3;
+    const size_t small_sectors = small_sector_data_blocks / 3;
+    size_t real_block = small_sectors * 4 + small_sector_block_offset;
+    if(small_sectors >= 16) {
+        real_block += 4; // Skip MAD2
+    }
+    if(large_sector_data_blocks) {
+        const size_t large_sector_block_offset = large_sector_data_blocks % 15;
+        const size_t large_sectors = large_sector_data_blocks / 15;
+        real_block += large_sectors * 16 + large_sector_block_offset;
+    }
+
+    const uint8_t* cur = &ndef->mfc.blocks[real_block].data[real_block_data_offset];
+    while(len) {
+        size_t sector_trailer = mf_classic_get_sector_trailer_num_by_block(real_block);
+        const uint8_t* end = &ndef->mfc.blocks[sector_trailer].data[0];
+
+        const size_t chunk_len = MIN((size_t)(end - cur), len);
+        memcpy(buf, cur, chunk_len);
+        buf += chunk_len;
+        len -= chunk_len;
+
+        if(len) {
+            real_block = sector_trailer + 1;
+            if(real_block == 64) {
+                real_block += 4; // Skip MAD2
+            }
+            cur = &ndef->mfc.blocks[real_block].data[0];
+        }
+    }
+
+    return true;
+
+#elif NDEF_PROTO == NDEF_PROTO_SLIX
+
+    /* Mémoire contiguë : remappage sur le pointer données */
+    if(pos + len > ndef->slix.size) return false;
+    memcpy(buf, ndef->slix.start + pos, len);
+    return true;
+
+#elif NDEF_PROTO == NDEF_PROTO_T4T
+
+    /* Mémoire contiguë : remappage sur le pointer données */
+    if(pos + len > ndef->t4t.size) return false;
+    memcpy(buf, ndef->t4t.data + pos, len);
+    return true;
+
+#else
+
+    UNUSED(ndef);
+    UNUSED(pos);
+    UNUSED(len);
+    UNUSED(buf);
+    return false;
+
+#endif
+}
+
+// ---=== output helpers ===---
+
+static inline bool is_printable(char c) {
+    return (c >= ' ' && c <= '~') || c == '\r' || c == '\n';
+}
+
+static bool is_text(const uint8_t* buf, size_t len) {
+    for(size_t i = 0; i < len; i++) {
+        if(!is_printable(buf[i]) && !(buf[i] == '\0' && i == len - 1)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ndef_dump(Ndef* ndef, const char* prefix, size_t pos, size_t len, bool force_hex) {
+    if(prefix) furi_string_cat_printf(ndef->output, "%s: ", prefix);
+    /* Layouts variables empêchent accès mémoire direct */
+    /* RAM insuffisante pour buffer temporaire */
+    /* Itération plus lente pour économiser RAM et supporter layouts */
+    if(!force_hex) {
+        /* Caractère non imprimable : restaurer string puis rendu hex */
+        size_t string_prev = furi_string_size(ndef->output);
+        for(size_t i = 0; i < len; i++) {
+            char c;
+            if(!ndef_get(ndef, pos + i, 1, &c)) return false;
+            if(!is_printable(c) && !(c == '\0' && i == len - 1)) {
+                furi_string_left(ndef->output, string_prev);
+                force_hex = true;
+                break;
+            }
+            furi_string_push_back(ndef->output, c);
+        }
+    }
+    if(!force_hex) {
+        furi_string_cat(ndef->output, "\n");
+    } else {
+        uint8_t buf[4];
+        for(size_t i = 0; i < len; i += sizeof(buf)) {
+            uint8_t buf_len = MIN(sizeof(buf), len - i);
+            if(!ndef_get(ndef, pos + i, buf_len, &buf)) return false;
+            pretty_format_bytes_hex_canonical(
+                ndef->output, 4, PRETTY_FORMAT_FONT_MONOSPACE, buf, buf_len);
+            furi_string_cat(ndef->output, "\n");
+        }
+    }
+    return true;
+}
+
+static void
+    ndef_print(Ndef* ndef, const char* prefix, const void* buf, size_t len, bool force_hex) {
+    if(prefix) furi_string_cat_printf(ndef->output, "%s: ", prefix);
+    if(!force_hex && is_text(buf, len)) {
+        furi_string_cat_printf(ndef->output, "%.*s", len, (const char*)buf);
+    } else {
+        pretty_format_bytes_hex_canonical(ndef->output, 4, PRETTY_FORMAT_FONT_MONOSPACE, buf, len);
+    }
+    furi_string_cat(ndef->output, "\n");
+}
+
+// ---=== payload parsing ===---
+
+static inline uint8_t hex_to_int(char c) {
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return 0;
+}
+
+static char url_decode_char(const char* str) {
+    return (hex_to_int(str[0]) << 4) | hex_to_int(str[1]);
+}
+
+static bool ndef_parse_uri(Ndef* ndef, size_t pos, size_t len) {
+    const char* type = "URI";
+
+    // Parse URI prepend type
+    const char* prepend = NULL;
+    uint8_t prepend_type;
+    if(!ndef_get(ndef, pos++, 1, &prepend_type)) return false;
+    len--;
+    if(prepend_type < COUNT_OF(ndef_uri_prepends)) {
+        prepend = ndef_uri_prepends[prepend_type];
+    }
+    if(prepend) {
+        if(strncmp(prepend, "http", 4) == 0) {
+            type = "URL";
+        } else if(strncmp(prepend, "tel:", 4) == 0) {
+            type = "Phone";
+            prepend = ""; /* Non NULL pour éviter schema check ; caché en sortie */
+        } else if(strncmp(prepend, "mailto:", 7) == 0) {
+            type = "Mail";
+            prepend = ""; /* Non NULL pour éviter schema check ; caché en sortie */
+        }
+    }
+
+    /* Schema éventuellement ignoré si aucun prepend */
+    if(!prepend) {
+        char schema[7] = {0}; /* Schema maximal sept caractères hors NUL */
+        if(!ndef_get(ndef, pos, MIN(sizeof(schema), len), schema)) return false;
+        if(strncmp(schema, "http", 4) == 0) {
+            type = "URL";
+        } else if(strncmp(schema, "tel:", 4) == 0) {
+            type = "Phone";
+            pos += 4;
+            len -= 4;
+        } else if(strncmp(schema, "mailto:", 7) == 0) {
+            type = "Mail";
+            pos += 7;
+            len -= 7;
+        }
+    }
+
+    furi_string_cat_printf(ndef->output, "%s\n", type);
+    if(prepend) {
+        furi_string_cat(ndef->output, prepend);
+    }
+
+    /* URI caractère par caractère avec URL decode */
+    while(len) {
+        char c;
+        if(!ndef_get(ndef, pos++, 1, &c)) return false;
+        len--;
+        if(c != '%' || len < 2) { /* Encoding absent ou incomplet */
+            furi_string_push_back(ndef->output, c);
+            continue;
+        }
+        char enc[2];
+        if(!ndef_get(ndef, pos, 2, enc)) return false;
+        enc[0] = toupper(enc[0]);
+        enc[1] = toupper(enc[1]);
+        /* Consommer deux caractères uniquement si URL encoding valide */
+        /* Traitement ultérieur conserve caractère % */
+        if(((enc[0] >= 'A' && enc[0] <= 'F') || (enc[0] >= '0' && enc[0] <= '9')) &&
+           ((enc[1] >= 'A' && enc[1] <= 'F') || (enc[1] >= '0' && enc[1] <= '9'))) {
+            pos += 2;
+            len -= 2;
+            c = url_decode_char(enc);
+        }
+        furi_string_push_back(ndef->output, c);
+    }
+
+    return true;
+}
+
+static bool ndef_parse_text(Ndef* ndef, size_t pos, size_t len) {
+    furi_string_cat(ndef->output, "Text\n");
+    if(!ndef_dump(ndef, NULL, pos + 3, len - 3, false)) return false;
+    return true;
+}
+
+static bool ndef_parse_bt(Ndef* ndef, size_t pos, size_t len) {
+    furi_string_cat(ndef->output, "BT MAC\n");
+    if(len != 8) return false;
+    if(!ndef_dump(ndef, NULL, pos + 2, len - 2, true)) return false;
+    return true;
+}
+
+static bool ndef_parse_vcard(Ndef* ndef, size_t pos, size_t len) {
+    /* Masquer tags redondants peu utiles */
+    /* TODO: checks start_with/end_with FuriString */
+    /* Copie string gaspillerait RAM */
+    /* Repérer marqueurs extrêmes et ajuster position/longueur */
+    /* ndef_dump produit un caractère à la fois */
+    /* Stack minimale, aucune allocation heap */
+    static const char* const begin_tag = "BEGIN:VCARD";
+    static const uint8_t begin_len = strlen(begin_tag);
+    static const char* const version_tag = "VERSION:";
+    static const uint8_t version_len = strlen(version_tag);
+    static const char* const end_tag = "END:VCARD";
+    static const uint8_t end_len = strlen(end_tag);
+    char tmp[13] = {0}; /* Capacité pour BEGIN:VCARD\r\n */
+    uint8_t skip = 0;
+
+    // Skip BEGIN tag
+    if(len >= sizeof(tmp)) {
+        if(!ndef_get(ndef, pos, sizeof(tmp), tmp)) return false;
+        if(strncmp(begin_tag, tmp, begin_len) == 0) {
+            skip = begin_len;
+            if(tmp[skip] == '\r') skip++;
+            if(tmp[skip] == '\n') skip++;
+            pos += skip;
+            len -= skip;
+        }
+    }
+
+    // Skip VERSION tag
+    if(len >= sizeof(tmp)) {
+        if(!ndef_get(ndef, pos, sizeof(tmp), tmp)) return false;
+        if(strncmp(version_tag, tmp, version_len) == 0) {
+            skip = version_len;
+            while(skip < len) {
+                if(!ndef_get(ndef, pos + skip, 1, &tmp[0])) return false;
+                skip++;
+                if(tmp[0] == '\n') break;
+            }
+            pos += skip;
+            len -= skip;
+        }
+    }
+
+    // Skip END tag
+    if(len >= sizeof(tmp)) {
+        if(!ndef_get(ndef, pos + len - sizeof(tmp), sizeof(tmp), tmp)) return false;
+        /* Lire après END et tester offsets pour padding éventuel */
+        /* Pire cas END:VCARD avec CRLF double : 13 octets, taille tmp */
+
+        static const uint8_t offsets = sizeof(tmp) - end_len + 1;
+        for(uint8_t offset = 0; offset < offsets; offset++) {
+            if(strncmp(end_tag, tmp + offset, end_len) == 0) {
+                skip = sizeof(tmp) - offset;
+                len -= skip;
+                break;
+            }
+        }
+    }
+
+    furi_string_cat(ndef->output, "Contact\n");
+    ndef_dump(ndef, NULL, pos, len, false);
+
+    return true;
+}
+
+/* Adapté du NDEF WiFi Android : */
+// https://android.googlesource.com/platform/packages/apps/Nfc/+/025560080737b43876c9d81feff3151f497947e8/src/com/android/nfc/NfcWifiProtectedSetup.java
+static bool ndef_parse_wifi(Ndef* ndef, size_t pos, size_t len) {
+#define CREDENTIAL_FIELD_ID        (0x100E)
+#define SSID_FIELD_ID              (0x1045)
+#define NETWORK_KEY_FIELD_ID       (0x1027)
+#define AUTH_TYPE_FIELD_ID         (0x1003)
+#define AUTH_TYPE_EXPECTED_SIZE    (2)
+#define AUTH_TYPE_OPEN             (0x0001)
+#define AUTH_TYPE_WPA_PSK          (0x0002)
+#define AUTH_TYPE_WPA_EAP          (0x0008)
+#define AUTH_TYPE_WPA2_EAP         (0x0010)
+#define AUTH_TYPE_WPA2_PSK         (0x0020)
+#define AUTH_TYPE_WPA_AND_WPA2_PSK (0x0022)
+#define MAX_NETWORK_KEY_SIZE_BYTES (64)
+
+    furi_string_cat(ndef->output, "WiFi\n");
+    size_t end = pos + len;
+
+    uint8_t tmp_buf[2];
+    while(pos < end) {
+        if(!ndef_get(ndef, pos, 2, &tmp_buf)) return false;
+        uint16_t field_id = bit_lib_bytes_to_num_be(tmp_buf, 2);
+        pos += 2;
+        if(!ndef_get(ndef, pos, 2, &tmp_buf)) return false;
+        uint16_t field_len = bit_lib_bytes_to_num_be(tmp_buf, 2);
+        pos += 2;
+        FURI_LOG_D(TAG, "wifi field: %04X len: %d", field_id, field_len);
+
+        if(pos + field_len > end) {
+            return false;
+        }
+
+        if(field_id == CREDENTIAL_FIELD_ID) {
+            size_t field_end = pos + field_len;
+            while(pos < field_end) {
+                if(!ndef_get(ndef, pos, 2, &tmp_buf)) return false;
+                uint16_t cfg_id = bit_lib_bytes_to_num_be(tmp_buf, 2);
+                pos += 2;
+                if(!ndef_get(ndef, pos, 2, &tmp_buf)) return false;
+                uint16_t cfg_len = bit_lib_bytes_to_num_be(tmp_buf, 2);
+                pos += 2;
+                FURI_LOG_D(TAG, "wifi cfg: %04X len: %d", cfg_id, cfg_len);
+
+                if(pos + cfg_len > field_end) {
+                    return false;
+                }
+
+                switch(cfg_id) {
+                case SSID_FIELD_ID:
+                    if(!ndef_dump(ndef, "SSID", pos, cfg_len, false)) return false;
+                    pos += cfg_len;
+                    break;
+                case NETWORK_KEY_FIELD_ID:
+                    if(cfg_len > MAX_NETWORK_KEY_SIZE_BYTES) {
+                        return false;
+                    }
+                    if(!ndef_dump(ndef, "PWD", pos, cfg_len, false)) return false;
+                    pos += cfg_len;
+                    break;
+                case AUTH_TYPE_FIELD_ID:
+                    if(cfg_len != AUTH_TYPE_EXPECTED_SIZE) {
+                        return false;
+                    }
+                    if(!ndef_get(ndef, pos, 2, &tmp_buf)) return false;
+                    uint16_t auth_type = bit_lib_bytes_to_num_be(tmp_buf, 2);
+                    pos += 2;
+                    const char* auth;
+                    switch(auth_type) {
+                    case AUTH_TYPE_OPEN:
+                        auth = "Open";
+                        break;
+                    case AUTH_TYPE_WPA_PSK:
+                        auth = "WPA Personal";
+                        break;
+                    case AUTH_TYPE_WPA_EAP:
+                        auth = "WPA Enterprise";
+                        break;
+                    case AUTH_TYPE_WPA2_EAP:
+                        auth = "WPA2 Enterprise";
+                        break;
+                    case AUTH_TYPE_WPA2_PSK:
+                        auth = "WPA2 Personal";
+                        break;
+                    case AUTH_TYPE_WPA_AND_WPA2_PSK:
+                        auth = "WPA/WPA2 Personal";
+                        break;
+                    default:
+                        auth = "Unknown";
+                        break;
+                    }
+                    ndef_print(ndef, "AUTH", auth, strlen(auth), false);
+                    break;
+                default:
+                    pos += cfg_len;
+                    break;
+                }
+            }
+            return true;
+        }
+        pos += field_len;
+    }
+
+    furi_string_cat(ndef->output, "No data parsed\n");
+    return true;
+}
+
+// ---=== ndef layout parsing ===---
+
+bool ndef_parse_record(
+    Ndef* ndef,
+    size_t pos,
+    size_t len,
+    NdefTnf tnf,
+    const char* type,
+    uint8_t type_len);
+bool ndef_parse_message(Ndef* ndef, size_t pos, size_t len, size_t message_num, bool smart_poster);
+size_t ndef_parse_tlv(Ndef* ndef, size_t pos, size_t len, size_t already_parsed);
+
+bool ndef_parse_record(
+    Ndef* ndef,
+    size_t pos,
+    size_t len,
+    NdefTnf tnf,
+    const char* type,
+    uint8_t type_len) {
+    FURI_LOG_D(TAG, "payload type: %.*s len: %hu pos: %zu", type_len, type, len, pos);
+    if(!len) {
+        furi_string_cat(ndef->output, "Empty\n");
+        return true;
+    }
+
+    switch(tnf) {
+    case NdefTnfWellKnownType:
+        if(strncmp("Sp", type, type_len) == 0) {
+            if(ndef->smart_poster_depth >= NDEF_SMART_POSTER_MAX_DEPTH) {
+                furi_string_cat(ndef->output, "SmartPoster\nNesting too deep\n\n");
+                return false;
+            }
+            furi_string_cat(ndef->output, "SmartPoster\nContained records below\n\n");
+            ndef->smart_poster_depth++;
+            bool parsed = ndef_parse_message(ndef, pos, len, 0, true);
+            ndef->smart_poster_depth--;
+            return parsed;
+        } else if(strncmp("U", type, type_len) == 0) {
+            return ndef_parse_uri(ndef, pos, len);
+        } else if(strncmp("T", type, type_len) == 0) {
+            return ndef_parse_text(ndef, pos, len);
+        }
+        // Dump data without parsing
+        furi_string_cat(ndef->output, "Unknown\n");
+        ndef_print(ndef, "Well-known Type", type, type_len, false);
+        if(!ndef_dump(ndef, "Payload", pos, len, false)) return false;
+        return true;
+
+    case NdefTnfMediaType:
+        if(strncmp("application/vnd.bluetooth.ep.oob", type, type_len) == 0) {
+            return ndef_parse_bt(ndef, pos, len);
+        } else if(strncmp("text/vcard", type, type_len) == 0) {
+            return ndef_parse_vcard(ndef, pos, len);
+        } else if(strncmp("application/vnd.wfa.wsc", type, type_len) == 0) {
+            return ndef_parse_wifi(ndef, pos, len);
+        }
+        // Dump data without parsing
+        furi_string_cat(ndef->output, "Unknown\n");
+        ndef_print(ndef, "Media Type", type, type_len, false);
+        if(!ndef_dump(ndef, "Payload", pos, len, false)) return false;
+        return true;
+
+    case NdefTnfEmpty:
+    case NdefTnfAbsoluteUri:
+    case NdefTnfExternalType:
+    case NdefTnfUnknown:
+    case NdefTnfUnchanged:
+    case NdefTnfReserved:
+    default:
+        // Dump data without parsing
+        furi_string_cat(ndef->output, "Unsupported\n");
+        ndef_print(ndef, "Type name format", &tnf, 1, true);
+        ndef_print(ndef, "Type", type, type_len, false);
+        if(!ndef_dump(ndef, "Payload", pos, len, false)) return false;
+        return true;
+    }
+}
+
+// NDEF message structure:
+// https://docs.nordicsemi.com/bundle/ncs-latest/page/nrf/protocols/nfc/index.html#ndef_message_and_record_format
+bool ndef_parse_message(Ndef* ndef, size_t pos, size_t len, size_t message_num, bool smart_poster) {
+    size_t end = pos + len;
+
+    size_t record_num = 0;
+    bool last_record = false;
+    while(pos < end) {
+        /* Flags et TNF */
+        NdefFlagsTnf flags_tnf;
+        if(!ndef_get(ndef, pos++, 1, &flags_tnf)) return false;
+        FURI_LOG_D(TAG, "flags_tnf: %02X", *(uint8_t*)&flags_tnf);
+        FURI_LOG_D(TAG, "flags_tnf.message_begin: %d", flags_tnf.message_begin);
+        FURI_LOG_D(TAG, "flags_tnf.message_end: %d", flags_tnf.message_end);
+        FURI_LOG_D(TAG, "flags_tnf.chunk_flag: %d", flags_tnf.chunk_flag);
+        FURI_LOG_D(TAG, "flags_tnf.short_record: %d", flags_tnf.short_record);
+        FURI_LOG_D(TAG, "flags_tnf.id_length_present: %d", flags_tnf.id_length_present);
+        FURI_LOG_D(TAG, "flags_tnf.type_name_format: %02X", flags_tnf.type_name_format);
+        /* Message Begin uniquement sur premier record */
+        if(record_num++ && flags_tnf.message_begin) return false;
+        /* Message End uniquement sur dernier record */
+        if(last_record) return false;
+        if(flags_tnf.message_end) last_record = true;
+        /* Chunk Flag non supporté */
+        if(flags_tnf.chunk_flag) return false;
+
+        uint8_t type_len;
+        if(!ndef_get(ndef, pos++, 1, &type_len)) return false;
+
+        /* Longueur payload : 1 ou 4 octets */
+        uint32_t payload_len;
+        if(flags_tnf.short_record) {
+            uint8_t payload_len_short;
+            if(!ndef_get(ndef, pos++, 1, &payload_len_short)) return false;
+            payload_len = payload_len_short;
+        } else {
+            if(!ndef_get(ndef, pos, sizeof(payload_len), &payload_len)) return false;
+            payload_len = bit_lib_bytes_to_num_be((void*)&payload_len, sizeof(payload_len));
+            pos += sizeof(payload_len);
+        }
+
+        uint8_t id_len = 0;
+        if(flags_tnf.id_length_present) {
+            if(!ndef_get(ndef, pos++, 1, &id_len)) return false;
+        }
+
+        // Payload Type
+        char type_buf[32]; /* Type maximal 32 caractères hors NUL */
+        char* type = type_buf;
+        bool type_was_allocated = false;
+        if(type_len) {
+            if(type_len > sizeof(type_buf)) {
+                type = malloc(type_len);
+                type_was_allocated = true;
+            }
+            if(!ndef_get(ndef, pos, type_len, type)) {
+                if(type_was_allocated) free(type);
+                return false;
+            }
+            pos += type_len;
+        }
+
+        // Payload ID
+        pos += id_len;
+
+        if(smart_poster) {
+            furi_string_cat_printf(ndef->output, "\e*> SP-R%zu: ", record_num);
+        } else {
+            furi_string_cat_printf(ndef->output, "\e*> M%zu-R%zu: ", message_num, record_num);
+        }
+        if(!ndef_parse_record(ndef, pos, payload_len, flags_tnf.type_name_format, type, type_len)) {
+            if(type_was_allocated) free(type);
+            return false;
+        }
+        pos += payload_len;
+
+        if(type_was_allocated) free(type);
+        furi_string_trim(ndef->output, "\n");
+        furi_string_cat(ndef->output, "\n\n");
+    }
+
+    if(record_num == 0) {
+        if(smart_poster) {
+            furi_string_cat(ndef->output, "\e*> SP: Empty\n\n");
+        } else {
+            furi_string_cat_printf(ndef->output, "\e*> M%zu: Empty\n\n", message_num);
+        }
+    }
+
+    return pos == end && (last_record || record_num == 0);
+}
+
+// TLV structure:
+// https://docs.nordicsemi.com/bundle/ncs-latest/page/nrfxlib/nfc/doc/type_2_tag.html#data
+size_t ndef_parse_tlv(Ndef* ndef, size_t pos, size_t len, size_t already_parsed) {
+    size_t end = pos + len;
+    size_t message_num = 0;
+
+    while(pos < end) {
+        NdefTlv tlv;
+        if(!ndef_get(ndef, pos++, 1, &tlv)) return 0;
+        FURI_LOG_D(TAG, "tlv: %02X", tlv);
+
+        switch(tlv) {
+        default:
+
+            return 0;
+
+        case NdefTlvPadding:
+
+            break;
+
+        case NdefTlvTerminator:
+
+            return message_num;
+
+        case NdefTlvLockControl:
+        case NdefTlvMemoryControl:
+        case NdefTlvProprietary:
+        case NdefTlvNdefMessage: {
+            // Calculate length
+            uint16_t len;
+            uint8_t len_type;
+            if(!ndef_get(ndef, pos++, 1, &len_type)) return 0;
+            if(len_type < 0xFF) { // 1 byte length
+                len = len_type;
+            } else { // 3 byte length (0xFF marker + 2 byte integer)
+                if(!ndef_get(ndef, pos, sizeof(len), &len)) return 0;
+                len = bit_lib_bytes_to_num_be((void*)&len, sizeof(len));
+                pos += sizeof(len);
+            }
+
+            if(tlv != NdefTlvNdefMessage) {
+
+                pos += len;
+                break;
+            }
+
+            if(!ndef_parse_message(ndef, pos, len, ++message_num + already_parsed, false))
+                return 0;
+            pos += len;
+
+            break;
+        }
+        }
+    }
+
+    /* Fin sans terminateur TLV ni erreur : succès */
+
+    return message_num;
+}
+
+#if NDEF_PROTO != NDEF_PROTO_RAW
+
+// ---=== protocol entry-points ===---
+
+#if NDEF_PROTO == NDEF_PROTO_UL
+
+// MF UL memory layout:
+// https://docs.nordicsemi.com/bundle/ncs-latest/page/nrfxlib/nfc/doc/type_2_tag.html#memory_layout
+static bool ndef_ul_parse(const NfcDevice* device, FuriString* parsed_data) {
+    furi_assert(device);
+    furi_assert(parsed_data);
+
+    const MfUltralightData* data = nfc_device_get_data(device, NfcProtocolMfUltralight);
+
+    /* Type carte susceptible de contenir NDEF */
+    if(data->type != MfUltralightTypeNTAG203 && data->type != MfUltralightTypeNTAG213 &&
+       data->type != MfUltralightTypeNTAG215 && data->type != MfUltralightTypeNTAG216 &&
+       data->type != MfUltralightTypeNTAGI2C1K && data->type != MfUltralightTypeNTAGI2C2K &&
+       data->type != MfUltralightTypeNTAGI2CPlus1K &&
+       data->type != MfUltralightTypeNTAGI2CPlus2K) {
+        return false;
+    }
+
+    /* Validation valeurs Capability Container */
+    struct {
+        uint8_t nfc_magic_number;
+        uint8_t document_version_number;
+        uint8_t data_area_size; /* Taille utile / 8 ; mémoire utilisateur uniquement */
+        uint8_t read_write_access;
+    }* cc = (void*)&data->page[3].data[0];
+    if(cc->nfc_magic_number != 0xE1) return false;
+    if(cc->document_version_number != 0x10) return false;
+
+    // Calculate usable data area
+    const uint8_t* start = &data->page[4].data[0];
+    const uint8_t* end = start + (cc->data_area_size * 8);
+    size_t max_size = mf_ultralight_get_pages_total(data->type) * MF_ULTRALIGHT_PAGE_SIZE;
+    end = MIN(end, &data->page[0].data[0] + max_size);
+    size_t data_start = 0;
+    size_t data_size = end - start;
+
+    NDEF_TITLE(device, parsed_data);
+
+    Ndef ndef = {
+        .output = parsed_data,
+        .ul =
+            {
+                .start = start,
+                .size = data_size,
+            },
+    };
+    size_t parsed = ndef_parse_tlv(&ndef, data_start, data_size - data_start, 0);
+
+    if(parsed) {
+        furi_string_trim(parsed_data, "\n");
+        furi_string_cat(parsed_data, "\n");
+    } else {
+        furi_string_reset(parsed_data);
+    }
+
+    return parsed > 0;
+}
+
+#elif NDEF_PROTO == NDEF_PROTO_MFC
+
+// MFC MAD datasheet:
+// https://www.nxp.com/docs/en/application-note/AN10787.pdf
+#define AID_SIZE (2)
+static const uint64_t mad_key = 0xA0A1A2A3A4A5;
+
+// https://learn.adafruit.com/adafruit-pn532-rfid-nfc/ndef#storing-ndef-messages-in-mifare-sectors-607778
+static const uint8_t ndef_aid[AID_SIZE] = {0x03, 0xE1};
+
+static bool ndef_mfc_parse(const NfcDevice* device, FuriString* parsed_data) {
+    furi_assert(device);
+    furi_assert(parsed_data);
+
+    const MfClassicData* data = nfc_device_get_data(device, NfcProtocolMfClassic);
+
+    /* Type carte susceptible de contenir NDEF */
+    if(data->type != MfClassicType1k && data->type != MfClassicType4k &&
+       data->type != MfClassicTypeMini) {
+        return false;
+    }
+
+    bool sectors_with_ndef[MF_CLASSIC_TOTAL_SECTORS_MAX] = {0};
+    const size_t sector_count = mf_classic_get_total_sectors_num(data->type);
+    const struct {
+        size_t block;
+        uint8_t aid_count;
+    } mads[2] = {
+        {1, 15},
+        {64, 23},
+    };
+    for(uint8_t mad = 0; mad < COUNT_OF(mads); mad++) {
+        const size_t block = mads[mad].block;
+        const size_t sector = mf_classic_get_sector_by_block(block);
+        if(sector_count <= sector) continue;
+
+        const MfClassicSectorTrailer* sector_trailer =
+            mf_classic_get_sector_trailer_by_sector(data, sector);
+        const uint64_t sector_key_a = bit_lib_bytes_to_num_be(
+            sector_trailer->key_a.data, COUNT_OF(sector_trailer->key_a.data));
+        if(sector_key_a != mad_key) continue;
+        // Find NDEF AIDs
+        for(uint8_t aid_index = 0; aid_index < mads[mad].aid_count; aid_index++) {
+            const uint8_t* aid = &data->block[block].data[2 + aid_index * AID_SIZE];
+            if(memcmp(aid, ndef_aid, AID_SIZE) == 0) {
+                sectors_with_ndef[aid_index + 1] = true;
+            }
+        }
+    }
+
+    NDEF_TITLE(device, parsed_data);
+
+    /* Data space exclut sector trailers et MAD2 */
+    /* Borner parsing au contenu réel de la carte */
+    // First 32 sectors: 3 data blocks, 1 sector trailer.
+    /* Secteur 16 réservé à MAD2, à ignorer */
+    /* 32 premiers secteurs : 93 blocs data */
+    // Last 8 sectors: 15 data blocks, 1 sector trailer.
+    /* Huit derniers secteurs : 120 blocs data */
+    size_t data_size;
+    if(sector_count > 32) {
+        data_size = 93 + (sector_count - 32) * 15;
+    } else {
+        data_size = sector_count * 3;
+        if(sector_count > 16) {
+            data_size -= 3; // Skip MAD2
+        }
+    }
+    data_size *= MF_CLASSIC_BLOCK_SIZE;
+
+    Ndef ndef = {
+        .output = parsed_data,
+        .mfc =
+            {
+                .blocks = data->block,
+                .size = data_size,
+            },
+    };
+    size_t total_parsed = 0;
+
+    for(size_t sector = 0; sector < sector_count; sector++) {
+        if(!sectors_with_ndef[sector]) continue;
+        FURI_LOG_D(TAG, "sector: %d", sector);
+        size_t string_prev = furi_string_size(parsed_data);
+
+        /* Exclure sector trailers/MAD2 */
+        size_t data_block;
+        if(sector < 32) {
+            data_block = sector * 3;
+            if(sector >= 16) {
+                data_block -= 3; // Skip MAD2
+            }
+        } else {
+            data_block = 93 + (sector - 32) * 15;
+        }
+        FURI_LOG_D(TAG, "data_block: %zu", data_block);
+        size_t data_start = data_block * MF_CLASSIC_BLOCK_SIZE;
+        size_t parsed = ndef_parse_tlv(&ndef, data_start, data_size - data_start, total_parsed);
+
+        if(parsed) {
+            total_parsed += parsed;
+            furi_string_trim(parsed_data, "\n");
+            furi_string_cat(parsed_data, "\n");
+        } else {
+            furi_string_left(parsed_data, string_prev);
+        }
+    }
+
+    if(!total_parsed) {
+        furi_string_reset(parsed_data);
+    }
+
+    return total_parsed > 0;
+}
+
+#elif NDEF_PROTO == NDEF_PROTO_SLIX
+
+// SLIX NDEF memory layout:
+// https://community.nxp.com/pwmxy87654/attachments/pwmxy87654/nfc/7583/1/EEOL_2011FEB16_EMS_RFD_AN_01.pdf
+static bool ndef_slix_parse(const NfcDevice* device, FuriString* parsed_data) {
+    furi_assert(device);
+    furi_assert(parsed_data);
+
+    const Iso15693_3Data* data = nfc_device_get_data(device, NfcProtocolIso15693_3);
+    const uint8_t block_size = iso15693_3_get_block_size(data);
+    const uint16_t block_count = iso15693_3_get_block_count(data);
+    const uint8_t* blocks = simple_array_cget_data(data->block_data);
+
+    /* TODO(-nofl): identifier autres cartes NDEF ISO15693 */
+    /* TODO: supporter tags ISO15693 non-SLIX */
+    /* Parsing ISO15693 avec hypothèses layout SLIX */
+    if(block_size != SLIX_BLOCK_SIZE) {
+        return false;
+    }
+
+    /* Validation valeurs Capability Container */
+    struct {
+        uint8_t nfc_magic_number;
+        uint8_t read_write_access       : 4;
+        uint8_t document_version_number : 4;
+        uint8_t data_area_size; // Total byte size / 8, includes block 0
+        uint8_t mbread_ipread;
+    }* cc = (void*)&blocks[0 * block_size];
+    if(cc->nfc_magic_number != 0xE1) return false;
+    if(cc->document_version_number != 0x4) return false;
+
+    // Calculate usable data area
+    const uint8_t* start = &blocks[1 * block_size];
+    const uint8_t* end = blocks + (cc->data_area_size * 8);
+    size_t max_size = block_count * block_size;
+    end = MIN(end, blocks + max_size);
+    size_t data_start = 0;
+    size_t data_size = end - start;
+
+    NDEF_TITLE(device, parsed_data);
+
+    Ndef ndef = {
+        .output = parsed_data,
+        .slix =
+            {
+                .start = start,
+                .size = data_size,
+            },
+    };
+    size_t parsed = ndef_parse_tlv(&ndef, data_start, data_size - data_start, 0);
+
+    if(parsed) {
+        furi_string_trim(parsed_data, "\n");
+        furi_string_cat(parsed_data, "\n");
+    } else {
+        furi_string_reset(parsed_data);
+    }
+
+    return parsed > 0;
+}
+
+#elif NDEF_PROTO == NDEF_PROTO_T4T
+
+static bool ndef_t4t_parse(const NfcDevice* device, FuriString* parsed_data) {
+    furi_assert(device);
+    furi_assert(parsed_data);
+
+    const Type4TagData* data = nfc_device_get_data(device, NfcProtocolType4Tag);
+    size_t data_start = 0;
+    size_t data_size = simple_array_get_count(data->ndef_data);
+
+    NDEF_TITLE(device, parsed_data);
+
+    furi_string_replace(parsed_data, "Card: ", "Protocol: ");
+    if(data->is_tag_specific && !furi_string_empty(data->platform_name)) {
+        furi_string_cat_printf(
+            parsed_data, "Card: %s\n", furi_string_get_cstr(data->platform_name));
+    }
+
+    Ndef ndef = {
+        .output = parsed_data,
+        .t4t =
+            {
+                .data = data_size == 0 ? NULL : simple_array_cget_data(data->ndef_data),
+                .size = data_size,
+            },
+    };
+    size_t parsed = ndef_parse_message(&ndef, data_start, data_size - data_start, 1, false);
+
+    if(parsed) {
+        furi_string_trim(parsed_data, "\n");
+        furi_string_cat(parsed_data, "\n");
+    } else {
+        furi_string_reset(parsed_data);
+    }
+
+    return parsed > 0;
+}
+
+#endif
+
+// ---=== boilerplate ===---
+
+/* Implémentation interface app/plugin */
+static const NfcSupportedCardsPlugin ndef_plugin = {
+    .verify = NULL,
+    .read = NULL,
+#if NDEF_PROTO == NDEF_PROTO_UL
+    .parse = ndef_ul_parse,
+    .protocol = NfcProtocolMfUltralight,
+#elif NDEF_PROTO == NDEF_PROTO_MFC
+    .parse = ndef_mfc_parse,
+    .protocol = NfcProtocolMfClassic,
+#elif NDEF_PROTO == NDEF_PROTO_SLIX
+    .parse = ndef_slix_parse,
+    .protocol = NfcProtocolSlix,
+#elif NDEF_PROTO == NDEF_PROTO_T4T
+    .parse = ndef_t4t_parse,
+    .protocol = NfcProtocolType4Tag,
+#endif
+};
+
+/* Descriptor conforme au contrat plugin */
+static const FlipperAppPluginDescriptor ndef_plugin_descriptor = {
+    .appid = NFC_SUPPORTED_CARD_PLUGIN_APP_ID,
+    .ep_api_version = NFC_SUPPORTED_CARD_PLUGIN_API_VERSION,
+    .entry_point = &ndef_plugin,
+};
+
+/* Entrée plugin : pointeur vers descriptor const */
+const FlipperAppPluginDescriptor* ndef_plugin_ep(void) {
+    return &ndef_plugin_descriptor;
+}
+
+#endif

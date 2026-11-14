@@ -1,0 +1,10 @@
+App(
+    appid="debug_apps",
+    name="Basic debug apps bundle",
+    apptype=FlipperAppType.METAPACKAGE,
+    provides=[
+        "usb_mouse",
+        "uart_echo",
+        "speaker_debug",
+    ],
+)

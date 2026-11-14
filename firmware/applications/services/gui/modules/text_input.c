@@ -1,0 +1,742 @@
+#include "text_input.h"
+#include <gui/elements.h>
+#include <assets_icons.h>
+#include <furi.h>
+#include <furi_hal.h>
+#include <storage/storage.h>
+#include <stdio.h>
+#include <string.h>
+
+struct TextInput {
+    View* view;
+    FuriTimer* timer;
+    FuriThread* weave_bridge_thread;
+    volatile bool weave_bridge_running;
+    /* Never invoke result callbacks while holding the ViewModel lock. */
+    TextInputCallback pending_callback;
+    void* pending_context;
+};
+
+typedef struct {
+    const char text;
+    const uint8_t x;
+    const uint8_t y;
+} TextInputKey;
+
+typedef struct {
+    const char* header;
+    char* text_buffer;
+    size_t text_buffer_size;
+    size_t minimum_length;
+    bool clear_default_text;
+
+    TextInputCallback callback;
+    void* callback_context;
+
+    uint8_t selected_row;
+    uint8_t selected_column;
+
+    TextInputValidatorCallback validator_callback;
+    void* validator_callback_context;
+    FuriString* validator_text;
+    bool validator_message_visible;
+} TextInputModel;
+
+static const uint8_t keyboard_origin_x = 1;
+static const uint8_t keyboard_origin_y = 29;
+static const uint8_t keyboard_row_count = 3;
+
+#define ENTER_KEY     '\r'
+#define BACKSPACE_KEY '\b'
+
+static const TextInputKey keyboard_keys_row_1[] = {
+    {'q', 1, 8},
+    {'w', 10, 8},
+    {'e', 19, 8},
+    {'r', 28, 8},
+    {'t', 37, 8},
+    {'y', 46, 8},
+    {'u', 55, 8},
+    {'i', 64, 8},
+    {'o', 73, 8},
+    {'p', 82, 8},
+    {'0', 91, 8},
+    {'1', 100, 8},
+    {'2', 110, 8},
+    {'3', 120, 8},
+};
+
+static const TextInputKey keyboard_keys_row_2[] = {
+    {'a', 1, 20},
+    {'s', 10, 20},
+    {'d', 19, 20},
+    {'f', 28, 20},
+    {'g', 37, 20},
+    {'h', 46, 20},
+    {'j', 55, 20},
+    {'k', 64, 20},
+    {'l', 73, 20},
+    {BACKSPACE_KEY, 82, 12},
+    {'4', 100, 20},
+    {'5', 110, 20},
+    {'6', 120, 20},
+};
+
+static const TextInputKey keyboard_keys_row_3[] = {
+    {'z', 1, 32},
+    {'x', 10, 32},
+    {'c', 19, 32},
+    {'v', 28, 32},
+    {'b', 37, 32},
+    {'n', 46, 32},
+    {'m', 55, 32},
+    {'_', 64, 32},
+    {ENTER_KEY, 74, 23},
+    {'7', 100, 32},
+    {'8', 110, 32},
+    {'9', 120, 32},
+};
+
+static uint8_t get_row_size(uint8_t row_index) {
+    uint8_t row_size = 0;
+
+    switch(row_index + 1) {
+    case 1:
+        row_size = COUNT_OF(keyboard_keys_row_1);
+        break;
+    case 2:
+        row_size = COUNT_OF(keyboard_keys_row_2);
+        break;
+    case 3:
+        row_size = COUNT_OF(keyboard_keys_row_3);
+        break;
+    default:
+        furi_crash();
+    }
+
+    return row_size;
+}
+
+static const TextInputKey* get_row(uint8_t row_index) {
+    const TextInputKey* row = NULL;
+
+    switch(row_index + 1) {
+    case 1:
+        row = keyboard_keys_row_1;
+        break;
+    case 2:
+        row = keyboard_keys_row_2;
+        break;
+    case 3:
+        row = keyboard_keys_row_3;
+        break;
+    default:
+        furi_crash();
+    }
+
+    return row;
+}
+
+static char get_selected_char(TextInputModel* model) {
+    return get_row(model->selected_row)[model->selected_column].text;
+}
+
+static bool char_is_lowercase(char letter) {
+    return letter >= 0x61 && letter <= 0x7A;
+}
+
+static char char_to_uppercase(const char letter) {
+    if(letter == '_') {
+        return 0x20;
+    } else if(islower(letter)) {
+        return letter - 0x20;
+    } else {
+        return letter;
+    }
+}
+
+static void text_input_backspace_cb(TextInputModel* model) {
+    size_t text_length = model->clear_default_text ? 1 : strlen(model->text_buffer);
+    if(text_length > 0) {
+        model->text_buffer[text_length - 1] = 0;
+    }
+}
+
+static void text_input_view_draw_callback(Canvas* canvas, void* _model) {
+    TextInputModel* model = _model;
+    size_t text_length = model->text_buffer ? strlen(model->text_buffer) : 0;
+    uint8_t needed_string_width = canvas_width(canvas) - 8;
+    uint8_t start_pos = 4;
+
+    const char* text = model->text_buffer;
+
+    canvas_clear(canvas);
+    canvas_set_color(canvas, ColorBlack);
+
+    canvas_draw_str(canvas, 2, 8, model->header);
+    elements_slightly_rounded_frame(canvas, 1, 12, 126, 15);
+
+    if(canvas_string_width(canvas, text) > needed_string_width) {
+        canvas_draw_str(canvas, start_pos, 22, "...");
+        start_pos += 6;
+        needed_string_width -= 8;
+    }
+
+    while(text != 0 && canvas_string_width(canvas, text) > needed_string_width) {
+        text++;
+    }
+
+    if(model->clear_default_text) {
+        elements_slightly_rounded_box(
+            canvas, start_pos - 1, 14, canvas_string_width(canvas, text) + 2, 10);
+        canvas_set_color(canvas, ColorWhite);
+    } else {
+        canvas_draw_str(canvas, start_pos + canvas_string_width(canvas, text) + 1, 22, "|");
+        canvas_draw_str(canvas, start_pos + canvas_string_width(canvas, text) + 2, 22, "|");
+    }
+    canvas_draw_str(canvas, start_pos, 22, text);
+
+    canvas_set_font(canvas, FontKeyboard);
+
+    for(uint8_t row = 0; row < keyboard_row_count; row++) {
+        const uint8_t column_count = get_row_size(row);
+        const TextInputKey* keys = get_row(row);
+
+        for(size_t column = 0; column < column_count; column++) {
+            if(keys[column].text == ENTER_KEY) {
+                canvas_set_color(canvas, ColorBlack);
+                if(model->selected_row == row && model->selected_column == column) {
+                    canvas_draw_icon(
+                        canvas,
+                        keyboard_origin_x + keys[column].x,
+                        keyboard_origin_y + keys[column].y,
+                        &I_KeySaveSelected_24x11);
+                } else {
+                    canvas_draw_icon(
+                        canvas,
+                        keyboard_origin_x + keys[column].x,
+                        keyboard_origin_y + keys[column].y,
+                        &I_KeySave_24x11);
+                }
+            } else if(keys[column].text == BACKSPACE_KEY) {
+                canvas_set_color(canvas, ColorBlack);
+                if(model->selected_row == row && model->selected_column == column) {
+                    canvas_draw_icon(
+                        canvas,
+                        keyboard_origin_x + keys[column].x,
+                        keyboard_origin_y + keys[column].y,
+                        &I_KeyBackspaceSelected_16x9);
+                } else {
+                    canvas_draw_icon(
+                        canvas,
+                        keyboard_origin_x + keys[column].x,
+                        keyboard_origin_y + keys[column].y,
+                        &I_KeyBackspace_16x9);
+                }
+            } else {
+                if(model->selected_row == row && model->selected_column == column) {
+                    canvas_set_color(canvas, ColorBlack);
+                    canvas_draw_box(
+                        canvas,
+                        keyboard_origin_x + keys[column].x - 1,
+                        keyboard_origin_y + keys[column].y - 8,
+                        7,
+                        10);
+                    canvas_set_color(canvas, ColorWhite);
+                } else {
+                    canvas_set_color(canvas, ColorBlack);
+                }
+
+                if(model->clear_default_text ||
+                   (text_length == 0 && char_is_lowercase(keys[column].text))) {
+                    canvas_draw_glyph(
+                        canvas,
+                        keyboard_origin_x + keys[column].x,
+                        keyboard_origin_y + keys[column].y,
+                        char_to_uppercase(keys[column].text));
+                } else {
+                    canvas_draw_glyph(
+                        canvas,
+                        keyboard_origin_x + keys[column].x,
+                        keyboard_origin_y + keys[column].y,
+                        keys[column].text);
+                }
+            }
+        }
+    }
+    if(model->validator_message_visible) {
+        canvas_set_font(canvas, FontSecondary);
+        canvas_set_color(canvas, ColorWhite);
+        canvas_draw_box(canvas, 8, 10, 110, 48);
+        canvas_set_color(canvas, ColorBlack);
+        canvas_draw_icon(canvas, 10, 14, &I_WarningDolphin_45x42);
+        canvas_draw_rframe(canvas, 8, 8, 112, 50, 3);
+        canvas_draw_rframe(canvas, 9, 9, 110, 48, 2);
+        elements_multiline_text(canvas, 62, 20, furi_string_get_cstr(model->validator_text));
+        canvas_set_font(canvas, FontKeyboard);
+    }
+}
+
+static void text_input_handle_up(TextInput* text_input, TextInputModel* model) {
+    UNUSED(text_input);
+    if(model->selected_row > 0) {
+        model->selected_row--;
+        if(model->selected_column > get_row_size(model->selected_row) - 6) {
+            model->selected_column = model->selected_column + 1;
+        }
+    }
+}
+
+static void text_input_handle_down(TextInput* text_input, TextInputModel* model) {
+    UNUSED(text_input);
+    if(model->selected_row < keyboard_row_count - 1) {
+        model->selected_row++;
+        if(model->selected_column > get_row_size(model->selected_row) - 4) {
+            model->selected_column = model->selected_column - 1;
+        }
+    }
+}
+
+static void text_input_handle_left(TextInput* text_input, TextInputModel* model) {
+    UNUSED(text_input);
+    if(model->selected_column > 0) {
+        model->selected_column--;
+    } else {
+        model->selected_column = get_row_size(model->selected_row) - 1;
+    }
+}
+
+static void text_input_handle_right(TextInput* text_input, TextInputModel* model) {
+    UNUSED(text_input);
+    if(model->selected_column < get_row_size(model->selected_row) - 1) {
+        model->selected_column++;
+    } else {
+        model->selected_column = 0;
+    }
+}
+
+static void text_input_handle_ok(TextInput* text_input, TextInputModel* model, bool shift) {
+    char selected = get_selected_char(model);
+    size_t text_length = strlen(model->text_buffer);
+
+    bool toggle_case = text_length == 0 || model->clear_default_text;
+    if(shift) toggle_case = !toggle_case;
+    if(toggle_case) {
+        selected = char_to_uppercase(selected);
+    }
+
+    if(selected == ENTER_KEY) {
+        if(model->validator_callback &&
+           (!model->validator_callback(
+               model->text_buffer, model->validator_text, model->validator_callback_context))) {
+            model->validator_message_visible = true;
+            furi_timer_start(text_input->timer, furi_kernel_get_tick_frequency() * 4);
+        } else if(model->callback != 0 && text_length >= model->minimum_length) {
+            text_input->pending_callback = model->callback;
+            text_input->pending_context = model->callback_context;
+        }
+    } else if(selected == BACKSPACE_KEY) {
+        text_input_backspace_cb(model);
+    } else {
+        if(model->clear_default_text) {
+            text_length = 0;
+        }
+        if(text_length < (model->text_buffer_size - 1)) {
+            model->text_buffer[text_length] = selected;
+            model->text_buffer[text_length + 1] = 0;
+        }
+    }
+    model->clear_default_text = false;
+}
+
+static bool text_input_view_input_callback(InputEvent* event, void* context) {
+    TextInput* text_input = context;
+    furi_assert(text_input);
+
+    bool consumed = false;
+
+    // Acquire model
+    TextInputModel* model = view_get_model(text_input->view);
+
+    if((!(event->type == InputTypePress) && !(event->type == InputTypeRelease)) &&
+       model->validator_message_visible) {
+        model->validator_message_visible = false;
+        consumed = true;
+    } else if(event->type == InputTypeShort) {
+        consumed = true;
+        switch(event->key) {
+        case InputKeyUp:
+            text_input_handle_up(text_input, model);
+            break;
+        case InputKeyDown:
+            text_input_handle_down(text_input, model);
+            break;
+        case InputKeyLeft:
+            text_input_handle_left(text_input, model);
+            break;
+        case InputKeyRight:
+            text_input_handle_right(text_input, model);
+            break;
+        case InputKeyOk:
+            text_input_handle_ok(text_input, model, false);
+            break;
+        default:
+            consumed = false;
+            break;
+        }
+    } else if(event->type == InputTypeLong) {
+        consumed = true;
+        switch(event->key) {
+        case InputKeyUp:
+            text_input_handle_up(text_input, model);
+            break;
+        case InputKeyDown:
+            text_input_handle_down(text_input, model);
+            break;
+        case InputKeyLeft:
+            text_input_handle_left(text_input, model);
+            break;
+        case InputKeyRight:
+            text_input_handle_right(text_input, model);
+            break;
+        case InputKeyOk:
+            text_input_handle_ok(text_input, model, true);
+            break;
+        case InputKeyBack:
+            text_input_backspace_cb(model);
+            break;
+        default:
+            consumed = false;
+            break;
+        }
+    } else if(event->type == InputTypeRepeat) {
+        consumed = true;
+        switch(event->key) {
+        case InputKeyUp:
+            text_input_handle_up(text_input, model);
+            break;
+        case InputKeyDown:
+            text_input_handle_down(text_input, model);
+            break;
+        case InputKeyLeft:
+            text_input_handle_left(text_input, model);
+            break;
+        case InputKeyRight:
+            text_input_handle_right(text_input, model);
+            break;
+        case InputKeyBack:
+            text_input_backspace_cb(model);
+            break;
+        default:
+            consumed = false;
+            break;
+        }
+    }
+
+    // Commit model
+    view_commit_model(text_input->view, consumed);
+
+    /* Switching views can synchronously stop/join the Weave bridge worker.
+     * The worker also reads the model, so first release the GUI model lock. */
+    TextInputCallback callback = text_input->pending_callback;
+    void* callback_context = text_input->pending_context;
+    text_input->pending_callback = NULL;
+    text_input->pending_context = NULL;
+    if(callback) callback(callback_context);
+
+    return consumed;
+}
+
+void text_input_timer_callback(void* context) {
+    furi_assert(context);
+    TextInput* text_input = context;
+
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        { model->validator_message_visible = false; },
+        true);
+}
+
+/* Weave remote keyboard: the companion can type into any stock TextInput
+ * view using a one-use, authenticated RPC-storage handshake. The UI remains
+ * authoritative: the user still confirms with OK on the Flipper's Save key.
+ * Custom keyboard widgets in third-party FAPs are not intercepted. */
+#define WEAVE_TEXT_REQUEST EXT_PATH(".weave/text-input.req")
+#define WEAVE_TEXT_REPLY EXT_PATH(".weave/text-input.reply")
+
+static int32_t text_input_weave_bridge_worker(void* context) {
+    TextInput* input = context;
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    bool published = false;
+    bool preview_seen = false;
+    char last_preview[257] = {0};
+    char token[48];
+    snprintf(token, sizeof(token), "%lu-%lu",
+        (unsigned long)furi_hal_rtc_get_timestamp(), (unsigned long)furi_get_tick());
+    while(input->weave_bridge_running) {
+        if(storage_sd_status(storage) != FSE_OK) {
+            furi_delay_ms(600);
+            continue;
+        }
+        if(!published) {
+            char header[36] = {0};
+            size_t cap = 0;
+            with_view_model(input->view, TextInputModel* model, {
+                cap = model->text_buffer && model->callback ? model->text_buffer_size : 0;
+                if(model->header) strlcpy(header, model->header, sizeof(header));
+            }, false);
+            if(cap < 2) {
+                /* Some apps configure the callback AFTER switching to the view.
+                 * Stay alive until the input is ready or the view is closed. */
+                furi_delay_ms(200);
+                continue;
+            }
+            if(cap > 257) cap = 257;
+            for(size_t i = 0; header[i]; ++i) {
+                if((unsigned char)header[i] < 32 || header[i] == '|') header[i] = ' ';
+            }
+            char request[112];
+            snprintf(request, sizeof(request), "%s|%u|%s", token,
+                (unsigned)(cap - 1), header);
+            storage_simply_mkdir(storage, EXT_PATH(".weave"));
+            storage_common_remove(storage, WEAVE_TEXT_REPLY);
+            File* f = storage_file_alloc(storage);
+            bool ok = storage_file_open(f, WEAVE_TEXT_REQUEST,
+                FSAM_WRITE, FSOM_CREATE_ALWAYS);
+            if(ok) ok = storage_file_write(f, request, strlen(request)) == strlen(request);
+            if(storage_file_is_open(f)) storage_file_close(f);
+            storage_file_free(f);
+            published = ok;
+        } else {
+            File* f = storage_file_alloc(storage);
+            if(storage_file_open(f, WEAVE_TEXT_REPLY, FSAM_READ, FSOM_OPEN_EXISTING)) {
+                char response[310] = {0};
+                size_t size = storage_file_read(f, response, sizeof(response) - 1);
+                if(storage_file_is_open(f)) storage_file_close(f);
+                const size_t prefix = strlen(token);
+                if(size > prefix + 2 && size < sizeof(response) - 1 &&
+                   strncmp(response, token, prefix) == 0 &&
+                   response[prefix] == '|' && response[size - 1] == '\n') {
+                    response[size - 1] = '\0';
+                    /* P = live preview, F = final. Backwards compatible with
+                     * the original token|text\n format. A preview stays on SD
+                     * until overwritten, preventing a read/delete/write race. */
+                    bool preview = response[prefix + 1] == 'P' &&
+                        response[prefix + 2] == '|';
+                    bool final = response[prefix + 1] == 'F' &&
+                        response[prefix + 2] == '|';
+                    const char* typed = response + prefix + (preview || final ? 3 : 1);
+                    bool valid = true;
+                    size_t typed_len = strlen(typed);
+                    if(typed_len > 256) valid = false;
+                    for(const char* it = typed; *it; ++it)
+                        if((unsigned char)*it < 32 || (unsigned char)*it > 126)
+                            valid = false;
+                    if(valid && (!preview || !preview_seen || strcmp(last_preview, typed))) {
+                        with_view_model(input->view, TextInputModel* model, {
+                            if(model->text_buffer && model->text_buffer_size > typed_len) {
+                                strlcpy(model->text_buffer, typed,
+                                    model->text_buffer_size);
+                                model->clear_default_text = false;
+                                if(!preview) {
+                                    /* Final value is NOT submitted here: the
+                                     * native Save key/validator remains authoritative. */
+                                    model->selected_row = 2;
+                                    model->selected_column = 8;
+                                }
+                            }
+                        }, true);
+                        if(preview) {
+                            strlcpy(last_preview, typed, sizeof(last_preview));
+                            preview_seen = true;
+                        }
+                    }
+                    if(valid && !preview) {
+                        storage_common_remove(storage, WEAVE_TEXT_REQUEST);
+                        storage_common_remove(storage, WEAVE_TEXT_REPLY);
+                        published = false;
+                        break;
+                    }
+                }
+            } else if(storage_file_is_open(f)) storage_file_close(f);
+            storage_file_free(f);
+        }
+        furi_delay_ms(300);
+    }
+    if(published) storage_common_remove(storage, WEAVE_TEXT_REQUEST);
+    storage_common_remove(storage, WEAVE_TEXT_REPLY);
+    furi_record_close(RECORD_STORAGE);
+    return 0;
+}
+
+static void text_input_weave_enter(void* context) {
+    TextInput* input = context;
+    if(input->weave_bridge_thread) return;
+    input->weave_bridge_running = true;
+    input->weave_bridge_thread = furi_thread_alloc_ex(
+        "WeaveTextInput", 2048, text_input_weave_bridge_worker, input);
+    if(input->weave_bridge_thread) furi_thread_start(input->weave_bridge_thread);
+    else input->weave_bridge_running = false;
+}
+
+static void text_input_weave_exit(void* context) {
+    TextInput* input = context;
+    input->weave_bridge_running = false;
+    if(input->weave_bridge_thread) {
+        furi_thread_join(input->weave_bridge_thread);
+        furi_thread_free(input->weave_bridge_thread);
+        input->weave_bridge_thread = NULL;
+    }
+}
+
+TextInput* text_input_alloc(void) {
+    TextInput* text_input = malloc(sizeof(TextInput));
+    text_input->view = view_alloc();
+    text_input->weave_bridge_thread = NULL;
+    text_input->weave_bridge_running = false;
+    text_input->pending_callback = NULL;
+    text_input->pending_context = NULL;
+    view_set_context(text_input->view, text_input);
+    view_set_enter_callback(text_input->view, text_input_weave_enter);
+    view_set_exit_callback(text_input->view, text_input_weave_exit);
+    view_allocate_model(text_input->view, ViewModelTypeLocking, sizeof(TextInputModel));
+    view_set_draw_callback(text_input->view, text_input_view_draw_callback);
+    view_set_input_callback(text_input->view, text_input_view_input_callback);
+
+    text_input->timer = furi_timer_alloc(text_input_timer_callback, FuriTimerTypeOnce, text_input);
+
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        { model->validator_text = furi_string_alloc(); },
+        false);
+
+    text_input_reset(text_input);
+
+    return text_input;
+}
+
+void text_input_free(TextInput* text_input) {
+    furi_check(text_input);
+    text_input_weave_exit(text_input);
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        { furi_string_free(model->validator_text); },
+        false);
+
+    furi_timer_stop(text_input->timer);
+    // Release allocated memory
+    furi_timer_free(text_input->timer);
+
+    view_free(text_input->view);
+
+    free(text_input);
+}
+
+void text_input_reset(TextInput* text_input) {
+    furi_check(text_input);
+    text_input->pending_callback = NULL;
+    text_input->pending_context = NULL;
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        {
+            model->header = "";
+            model->selected_row = 0;
+            model->selected_column = 0;
+            model->minimum_length = 1;
+            model->clear_default_text = false;
+            model->text_buffer = NULL;
+            model->text_buffer_size = 0;
+            model->callback = NULL;
+            model->callback_context = NULL;
+            model->validator_callback = NULL;
+            model->validator_callback_context = NULL;
+            furi_string_reset(model->validator_text);
+            model->validator_message_visible = false;
+        },
+        true);
+}
+
+View* text_input_get_view(TextInput* text_input) {
+    furi_check(text_input);
+    return text_input->view;
+}
+
+void text_input_set_result_callback(
+    TextInput* text_input,
+    TextInputCallback callback,
+    void* callback_context,
+    char* text_buffer,
+    size_t text_buffer_size,
+    bool clear_default_text) {
+    furi_check(text_input);
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        {
+            model->callback = callback;
+            model->callback_context = callback_context;
+            model->text_buffer = text_buffer;
+            model->text_buffer_size = text_buffer_size;
+            model->clear_default_text = clear_default_text;
+            if(text_buffer && text_buffer[0] != '\0') {
+
+                model->selected_row = 2;
+                model->selected_column = 8;
+            }
+        },
+        true);
+}
+
+void text_input_set_minimum_length(TextInput* text_input, size_t minimum_length) {
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        { model->minimum_length = minimum_length; },
+        true);
+}
+
+void text_input_set_validator(
+    TextInput* text_input,
+    TextInputValidatorCallback callback,
+    void* callback_context) {
+    furi_check(text_input);
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        {
+            model->validator_callback = callback;
+            model->validator_callback_context = callback_context;
+        },
+        true);
+}
+
+TextInputValidatorCallback text_input_get_validator_callback(TextInput* text_input) {
+    furi_check(text_input);
+    TextInputValidatorCallback validator_callback = NULL;
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        { validator_callback = model->validator_callback; },
+        false);
+    return validator_callback;
+}
+
+void* text_input_get_validator_callback_context(TextInput* text_input) {
+    furi_check(text_input);
+    void* validator_callback_context = NULL;
+    with_view_model(
+        text_input->view,
+        TextInputModel * model,
+        { validator_callback_context = model->validator_callback_context; },
+        false);
+    return validator_callback_context;
+}
+
+void text_input_set_header_text(TextInput* text_input, const char* text) {
+    furi_check(text_input);
+    with_view_model(text_input->view, TextInputModel * model, { model->header = text; }, true);
+}

@@ -1,0 +1,17 @@
+# Options : documentation/AppManifests.md dans firmware amont
+
+App(
+    appid="@FBT_APPID@",  # ID unique requis
+    name="App @FBT_APPID@",  # Affiché dans menus
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="@FBT_APPID@_app",
+    stack_size=2 * 1024,
+    fap_category="Examples",
+
+
+    fap_icon="@FBT_APPID@.png",  # PNG 10x10, 1 bit
+
+
+
+    fap_icon_assets="images",
+)

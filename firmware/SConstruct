@@ -1,0 +1,511 @@
+
+
+
+# Évaluation SCons à chaque invocation fbt
+# SCons construit les dépendances au démarrage ; certains targets restent conditionnels
+
+
+
+import os
+from fbt.util import open_browser_action
+
+# Historique SCons sous build/ au lieu de la racine.
+SConsignFile("build/.sconsign.dblite")
+
+DefaultEnvironment(tools=[])
+
+EnsurePythonVersion(3, 8)
+
+
+
+# Environnement réservé aux options et validations de chemins
+fbt_variables = SConscript("site_scons/commandline.scons")
+cmd_environment = Environment(
+    toolpath=["#/site_scons/tools/fbt_tools"],
+    tools=[
+        ("fbt_help", {"vars": fbt_variables}),
+    ],
+    variables=fbt_variables,
+)
+
+
+
+coreenv = SConscript(
+    "site_scons/environ.scons",
+    exports={"VAR_ENV": cmd_environment},
+    toolpath=["#/site_scons/tools/fbt_tools"],
+)
+SConscript("site_scons/cc.scons", exports={"ENV": coreenv})
+
+
+distenv = coreenv.Clone(
+    tools=[
+        "fbt_dist",
+        "fbt_debugopts",
+        "openocd",
+        "blackmagic",
+        "jflash",
+        "doxygen",
+        "textfile",
+    ],
+    ENV=os.environ,
+    UPDATE_BUNDLE_DIR="build/dist/${DIST_DIR}/f${TARGET_HW}-update-${DIST_SUFFIX}",
+)
+
+firmware_env = distenv.AddFwProject(
+    base_env=coreenv,
+    fw_type="firmware",
+    fw_env_key="FW_ENV",
+)
+
+
+if GetOption("fullenv") or any(
+    filter(lambda target: "updater" in target or "flash_usb" in target, BUILD_TARGETS)
+):
+    updater_env = distenv.AddFwProject(
+        base_env=coreenv,
+        fw_type="updater",
+        fw_env_key="UPD_ENV",
+    )
+
+
+    dist_basic_arguments = [
+        "${ARGS}",
+        "--bundlever",
+        "${UPDATE_VERSION_STRING}",
+    ]
+    dist_radio_arguments = [
+        "--radio",
+        "${ROOT_DIR.abspath}/${COPRO_STACK_BIN_DIR}/${COPRO_STACK_BIN}",
+        "--radiotype",
+        "${COPRO_STACK_TYPE}",
+        "${COPRO_DISCLAIMER}",
+        "--obdata",
+        "${ROOT_DIR.abspath}/${COPRO_OB_DATA}",
+        "--stackversion",
+        "${COPRO_CUBE_VERSION}",
+    ]
+    dist_resource_arguments = [
+        "-r",
+        firmware_env.subst("${RESOURCES_ROOT}"),
+    ]
+    dist_splash_arguments = (
+        [
+            "--splash",
+            distenv.subst("assets/slideshow/$UPDATE_SPLASH"),
+        ]
+        if distenv["UPDATE_SPLASH"]
+        else []
+    )
+
+    selfupdate_dist = distenv.DistCommand(
+        "updater_package",
+        (distenv["DIST_DEPENDS"], firmware_env["FW_RESOURCES_MANIFEST"]),
+        DIST_EXTRA=[
+            *dist_basic_arguments,
+            *dist_radio_arguments,
+            *dist_resource_arguments,
+            *dist_splash_arguments,
+        ],
+    )
+
+    selfupdate_min_dist = distenv.DistCommand(
+        "updater_minpackage",
+        distenv["DIST_DEPENDS"],
+        DIST_EXTRA=dist_basic_arguments,
+    )
+
+
+    distenv.PhonyTarget(
+        "updater_debug",
+        "${GDBPYCOM}",
+        source=updater_env["FW_ELF"],
+        GDBREMOTE="${OPENOCD_GDB_PIPE}",
+    )
+
+    distenv.PhonyTarget(
+        "updater_blackmagic",
+        "${GDBPYCOM}",
+        source=updater_env["FW_ELF"],
+        GDBOPTS=distenv.subst("$GDBOPTS_BLACKMAGIC"),
+        GDBREMOTE="${BLACKMAGIC_ADDR}",
+    )
+
+
+    usb_update_package = distenv.AddUsbFlashTarget(
+        "#build/usbinstall.flag",
+        (firmware_env["FW_RESOURCES_MANIFEST"], selfupdate_dist),
+    )
+    distenv.Alias("flash_usb_full", usb_update_package)
+
+    usb_minupdate_package = distenv.AddUsbFlashTarget(
+        "#build/minusbinstall.flag", (selfupdate_min_dist,)
+    )
+    distenv.Alias("flash_usb", usb_minupdate_package)
+
+
+
+basic_dist = distenv.DistCommand("fw_dist", distenv["DIST_DEPENDS"])
+distenv.Default(basic_dist)
+
+dist_dir_name = distenv.GetProjetDirName()
+dist_dir = distenv.Dir(f"#/build/dist/{dist_dir_name}")
+external_apps_artifacts = firmware_env["FW_EXTAPPS"]
+external_app_list = external_apps_artifacts.application_map.values()
+
+fap_dist = [
+    distenv.Install(
+        dist_dir.Dir("debug_elf"),
+        list(app_artifact.debug for app_artifact in external_app_list),
+    ),
+    *(
+        distenv.Install(
+            dist_dir.File(dist_entry[1]).dir,
+            app_artifact.compact,
+        )
+        for app_artifact in external_app_list
+        for dist_entry in app_artifact.dist_entries
+    ),
+]
+Depends(
+    fap_dist,
+    list(app_artifact.validator for app_artifact in external_app_list),
+)
+# dist efface dist/<flavor> ; installer les FAP après les builds demandés
+# Ordonnancement global provoquerait des effacements croisés
+Requires(
+    fap_dist,
+    [
+        command
+        for name, target, command in distenv["DIST_COMMANDS"]
+        if name in BUILD_TARGETS or target in BUILD_TARGETS
+    ],
+)
+Alias("fap_dist", fap_dist)
+
+
+
+fap_deploy = distenv.PhonyTarget(
+    "fap_deploy",
+    Action(
+        [
+            [
+                "${PYTHON3}",
+                "${FBT_SCRIPT_DIR}/storage.py",
+                "-p",
+                "${FLIP_PORT}",
+                "send",
+                "${SOURCE}",
+                "/ext/apps",
+                "${ARGS}",
+            ]
+        ]
+    ),
+    source=firmware_env.Dir(("${RESOURCES_ROOT}/apps")),
+)
+Depends(fap_deploy, firmware_env["FW_RESOURCES_MANIFEST"])
+
+
+
+copro_dist = distenv.CoproBuilder(
+    "#/build/core2_firmware.tgz",
+    [],
+)
+distenv.AlwaysBuild(copro_dist)
+distenv.Alias("copro_dist", copro_dist)
+
+
+firmware_flash = distenv.AddFwFlashTarget(firmware_env)
+distenv.Alias("flash", firmware_flash)
+
+# TODO: implémenter dans fwflash.py
+firmware_jflash = distenv.AddJFlashTarget(firmware_env)
+distenv.Alias("jflash", firmware_jflash)
+
+distenv.PhonyTarget(
+    "gdb_trace_all",
+    [["${GDB}", "${GDBOPTS}", "${SOURCES}", "${GDBFLASH}"]],
+    source=firmware_env["FW_ELF"],
+    GDBOPTS="${GDBOPTS_BASE}",
+    GDBREMOTE="${OPENOCD_GDB_PIPE}",
+    GDBFLASH=[
+        "-ex",
+        "thread apply all bt",
+        "-ex",
+        "quit",
+    ],
+)
+
+
+firmware_debug = distenv.PhonyTarget(
+    "debug",
+    "${GDBPYCOM}",
+    source=firmware_env["FW_ELF"],
+    GDBOPTS="${GDBOPTS_BASE}",
+    GDBREMOTE="${OPENOCD_GDB_PIPE}",
+    FBT_FAP_DEBUG_ELF_ROOT=firmware_env["FBT_FAP_DEBUG_ELF_ROOT"],
+)
+distenv.Depends(firmware_debug, firmware_flash)
+
+firmware_blackmagic = distenv.PhonyTarget(
+    "blackmagic",
+    "${GDBPYCOM}",
+    source=firmware_env["FW_ELF"],
+    GDBOPTS="${GDBOPTS_BASE} ${GDBOPTS_BLACKMAGIC}",
+    GDBREMOTE="${BLACKMAGIC_ADDR}",
+    FBT_FAP_DEBUG_ELF_ROOT=firmware_env["FBT_FAP_DEBUG_ELF_ROOT"],
+)
+distenv.Depends(firmware_blackmagic, firmware_flash)
+
+# Debug ELF externe
+debug_other_opts = [
+    "-ex",
+    "source ${FBT_DEBUG_DIR}/PyCortexMDebug/PyCortexMDebug.py",
+
+
+    "-ex",
+    "source ${FBT_DEBUG_DIR}/flipperversion.py",
+    "-ex",
+    "fw-version",
+]
+
+distenv.PhonyTarget(
+    "debug_other",
+    "${GDBPYCOM}",
+    GDBOPTS="${GDBOPTS_BASE}",
+    GDBREMOTE="${OPENOCD_GDB_PIPE}",
+    GDBPYOPTS=debug_other_opts,
+)
+
+distenv.PhonyTarget(
+    "debug_other_blackmagic",
+    "${GDBPYCOM}",
+    GDBOPTS="${GDBOPTS_BASE} ${GDBOPTS_BLACKMAGIC}",
+    GDBREMOTE="${BLACKMAGIC_ADDR}",
+    GDBPYOPTS=debug_other_opts,
+)
+
+
+
+distenv.PhonyTarget(
+    "openocd",
+    [["${OPENOCDCOM}", "${ARGS}"]],
+)
+
+
+distenv.PhonyTarget(
+    "lint",
+    [
+        [
+            "${PYTHON3}",
+            "${FBT_SCRIPT_DIR}/lint.py",
+            "check",
+            "${LINT_SOURCES}",
+            "${ARGS}",
+        ]
+    ],
+    LINT_SOURCES=[n.srcnode() for n in firmware_env["LINT_SOURCES"]],
+)
+
+distenv.PhonyTarget(
+    "format",
+    [
+        [
+            "${PYTHON3}",
+            "${FBT_SCRIPT_DIR}/lint.py",
+            "format",
+            "${LINT_SOURCES}",
+            "${ARGS}",
+        ]
+    ],
+    LINT_SOURCES=[n.srcnode() for n in firmware_env["LINT_SOURCES"]],
+)
+
+# PY_LINT_SOURCES contient les SConscript récursifs
+# Inclure aussi les fichiers Python racine
+firmware_env.Append(
+    PY_LINT_SOURCES=[
+
+        "site_scons",
+        "applications",
+        "assets",
+        "targets",
+
+        "SConstruct",
+        "firmware.scons",
+        "fbt.py",
+    ],
+    IMG_LINT_SOURCES=[
+
+        "applications",
+        "assets",
+    ],
+)
+
+
+black_commandline = [
+    [
+        "@${PYTHON3}",
+        "-m",
+        "black",
+        "${PY_BLACK_ARGS}",
+        "${PY_LINT_SOURCES}",
+        "${ARGS}",
+    ]
+]
+black_base_args = [
+    "--include",
+    '"(\\.scons|\\.py|SConscript|SConstruct|\\.fam)$"',
+]
+
+distenv.PhonyTarget(
+    "lint_py",
+    black_commandline,
+    PY_BLACK_ARGS=[
+        "--check",
+        "--diff",
+        *black_base_args,
+    ],
+    PY_LINT_SOURCES=firmware_env["PY_LINT_SOURCES"],
+)
+
+distenv.PhonyTarget(
+    "format_py",
+    black_commandline,
+    PY_BLACK_ARGS=black_base_args,
+    PY_LINT_SOURCES=firmware_env["PY_LINT_SOURCES"],
+)
+
+
+distenv.PhonyTarget(
+    "lint_img",
+    [
+        [
+            "${PYTHON3}",
+            "${FBT_SCRIPT_DIR}/imglint.py",
+            "check",
+            "${IMG_LINT_SOURCES}",
+            "${ARGS}",
+        ]
+    ],
+    IMG_LINT_SOURCES=firmware_env["IMG_LINT_SOURCES"],
+)
+
+distenv.PhonyTarget(
+    "format_img",
+    [
+        [
+            "${PYTHON3}",
+            "${FBT_SCRIPT_DIR}/imglint.py",
+            "format",
+            "${IMG_LINT_SOURCES}",
+            "${ARGS}",
+        ]
+    ],
+    IMG_LINT_SOURCES=firmware_env["IMG_LINT_SOURCES"],
+)
+
+distenv.Alias("lint_all", ["lint", "lint_py", "lint_img"])
+distenv.Alias("format_all", ["format", "format_py", "format_img"])
+
+
+
+distenv.PhonyTarget(
+    "cli",
+    [
+        [
+            "${PYTHON3}",
+            "${FBT_SCRIPT_DIR}/serial_cli.py",
+            "-p",
+            "${FLIP_PORT}",
+            "${ARGS}",
+        ]
+    ],
+)
+
+
+
+distenv.PhonyTarget(
+    "cli_perf",
+    [
+        [
+            "${PYTHON3}",
+            "${FBT_SCRIPT_DIR}/serial_cli_perf.py",
+            "-p",
+            "${FLIP_PORT}",
+            "${ARGS}",
+        ]
+    ],
+)
+
+
+distenv.PhonyTarget(
+    "devboard_flash",
+    [
+        [
+            "${PYTHON3}",
+            "${FBT_SCRIPT_DIR}/wifi_board.py",
+            "${ARGS}",
+        ]
+    ],
+)
+
+
+
+distenv.PhonyTarget(
+    "get_blackmagic",
+    "@echo $( ${BLACKMAGIC_ADDR} $)",
+)
+
+
+
+distenv.PhonyTarget(
+    "get_stlink",
+    distenv.Action(
+        lambda **_: distenv.GetDevices(),
+        None,
+    ),
+)
+
+
+vscode_dist = distenv.Install(
+    "#.vscode",
+    [
+        distenv.Glob("#.vscode/example/*.json", exclude="*.tmpl"),
+        distenv.Glob("#.vscode/example/${LANG_SERVER}/*.json"),
+    ],
+)
+for template_file in distenv.Glob("#.vscode/example/*.tmpl"):
+    vscode_dist.append(
+        distenv.Substfile(
+            distenv.Dir("#.vscode").File(template_file.name.replace(".tmpl", "")),
+            template_file,
+            SUBST_DICT={
+                "@FBT_PLATFORM_EXECUTABLE_EXT@": ".exe" if os.name == "nt" else ""
+            },
+        )
+    )
+distenv.Precious(vscode_dist)
+distenv.NoClean(vscode_dist)
+distenv.Alias("vscode_dist", (vscode_dist, firmware_env["FW_CDB"]))
+
+
+distenv.PhonyTarget(
+    "env",
+    "@echo $( ${FBT_SCRIPT_DIR.abspath}/toolchain/fbtenv.sh $)",
+)
+
+doxy_build = distenv.DoxyBuild(
+    "build/docs/html/index.html",
+    "documentation/doxygen/Doxyfile-awesome.cfg",
+    doxy_env_variables={
+        "DOXY_SRC_ROOT": Dir(".").abspath,
+        "DOXY_BUILD_DIR": Dir("build/docs").abspath,
+        "DOXY_CONFIG_DIR": "documentation/doxygen",
+    },
+)
+distenv.Alias("doxygen", doxy_build)
+distenv.AlwaysBuild(doxy_build)
+
+
+distenv.PhonyTarget("doxy", open_browser_action, source=doxy_build)
