@@ -87,7 +87,7 @@ jobs:
           gradle-version: '8.10.2'
       - name: Check consistent version
         run: python firmware/site_scons/tools/check_version.py
-      - name: Prepare release signing keystore
+      - name: Configure Android signing (optional release keystore)
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.WEAVE_ANDROID_KEYSTORE_B64 }}
@@ -96,26 +96,44 @@ jobs:
           KEY_PASSWORD: ${{ secrets.WEAVE_ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [[ -z "$KEYSTORE_B64" || -z "$STORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
-            echo '::error::Missing Android release signing secrets. Refusing to publish a debug-signed APK.'
+          provided=0
+          for variable in KEYSTORE_B64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [[ -n "${!variable}" ]]; then ((provided+=1)); fi
+          done
+          if (( provided == 0 )); then
+            echo '::warning::Android release-signing secrets are absent; building a debug-signed APK. Debug keys on new runners may differ, so Android upgrades may require reinstalling.'
+            echo 'APK_VARIANT=debug' >> "$GITHUB_ENV"
+            echo 'Android APK signing: **debug** (development only).' >> "$GITHUB_STEP_SUMMARY"
+          elif (( provided == 4 )); then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/weave-release.jks"
+            test -s "$RUNNER_TEMP/weave-release.jks"
+            chmod 600 "$RUNNER_TEMP/weave-release.jks"
+            echo "WEAVE_ANDROID_KEYSTORE=$RUNNER_TEMP/weave-release.jks" >> "$GITHUB_ENV"
+            echo 'APK_VARIANT=release' >> "$GITHUB_ENV"
+            echo 'Android APK signing: **release**.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::error::Android signing secrets are incomplete. Configure all four secrets or remove all four to use a debug-signed APK.'
             exit 1
           fi
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/weave-release.jks"
-          test -s "$RUNNER_TEMP/weave-release.jks"
-          chmod 600 "$RUNNER_TEMP/weave-release.jks"
-      - name: Build signed Android release APK
+      - name: Build Android APK
         working-directory: apps/android
         shell: bash
         env:
-          WEAVE_ANDROID_KEYSTORE: ${{ runner.temp }}/weave-release.jks
           WEAVE_ANDROID_STORE_PASSWORD: ${{ secrets.WEAVE_ANDROID_STORE_PASSWORD }}
           WEAVE_ANDROID_KEY_ALIAS: ${{ secrets.WEAVE_ANDROID_KEY_ALIAS }}
           WEAVE_ANDROID_KEY_PASSWORD: ${{ secrets.WEAVE_ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          case "$APK_VARIANT" in
+            release) task=':app:assembleRelease' ;;
+            debug) task=':app:assembleDebug' ;;
+            *) echo '::error::Unknown Android signing variant'; exit 1 ;;
+          esac
           python ../../firmware/site_scons/tools/bootstrap_tools.py gradle \
-            --no-daemon --gradle-user-home "$RUNNER_TEMP/weave-gradle-cache" :app:assembleRelease
-          echo "APK_PATH=build/.work/android/app/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+            --no-daemon --gradle-user-home "$RUNNER_TEMP/weave-gradle-cache" "$task"
+          apk="$GITHUB_WORKSPACE/build/.work/android/app/outputs/apk/$APK_VARIANT/app-$APK_VARIANT.apk"
+          test -s "$apk"
+          echo "APK_PATH=$apk" >> "$GITHUB_ENV"
       - name: Verify Android APK signature
         shell: bash
         run: |

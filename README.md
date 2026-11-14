@@ -2,31 +2,25 @@
   <img src="firmware/assets/branding/Weave.png" width="160" alt="Weave logo">
 </p>
 
-<p align="center"><strong>Weave</strong></p>
+<h1 align="center">
+    <strong>Weave</strong>
+</h1>
 
 <p align="center">🧵 Flipper Zero firmware for network access without Wi-Fi hardware.</p>
 
 ---
 
-## Social preview
+<center>
+<img src=".github/assets/recap.gif" width="200" alt="Weave Android companion preview">
+</center>
 
-<table align="center">
-  <tr>
-    <td width="70%" align="center" valign="top">
-      <img src=".github/assets/weave-social.png" width="600" alt="Weave social preview">
-    </td>
-    <td width="30%" align="center" valign="top">
-      <img src=".github/assets/recap.png" width="235" alt="Weave Android companion preview">
-    </td>
-  </tr>
-</table>
 
 ---
 
 ## ✨ Features
 
 - Native networking for FAPs over USB/Bluetooth.
-- File, app and system management on Flipper Zero.
+- File, app and system managementon Flipper Zero.
 - Companion apps for Android, Windows, Linux and macOS.
 - Extended device controls and radio features.
 
