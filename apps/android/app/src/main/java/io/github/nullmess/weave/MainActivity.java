@@ -895,6 +895,7 @@ public final class MainActivity extends Activity {
         final List<Runnable> pendingCheckListeners = new ArrayList<>();
         WeaveUpdates.Release release;
         TextView versionView, buttonText;
+        ImageView statusIcon;
         FrameLayout progressTrack;
         View progressFill;
     }
@@ -1201,6 +1202,29 @@ public final class MainActivity extends Activity {
                              segment.contains("USB CLI connected") || segment.contains("USB CLI disconnected")))
                         renderTerminalPanel(true);
                     break;
+                case WeaveService.EVENT_FIRMWARE_UPDATE:
+                    String phase = intent.getStringExtra("phase");
+                    UpdateControl firmwareUpdate = updateControls[UPDATE_FIRMWARE];
+                    if ("error".equals(phase)) {
+                        firmwareUpdate.busy = false;
+                        firmwareUpdate.state = "unknown";
+                        firmwareUpdate.error = intent.getStringExtra("message");
+                        toast("Firmware update failed: " + (firmwareUpdate.error == null ? "unknown error" : firmwareUpdate.error));
+                    } else if ("ready".equals(phase)) {
+                        firmwareUpdate.busy = false;
+                        firmwareUpdate.state = "current";
+                        firmwareUpdate.error = "";
+                        firmwareUpdate.lastCheck = 0;
+                        if (flipperIsConnected()) checkUpdate(UPDATE_FIRMWARE);
+                    } else {
+                        firmwareUpdate.busy = true;
+                        firmwareUpdate.checkingRelease = false;
+                        firmwareUpdate.percent = intent.getIntExtra("percent", 0);
+                        firmwareUpdate.state = "installing";
+                        firmwareUpdate.error = "";
+                    }
+                    drawUpdateControl(UPDATE_FIRMWARE);
+                    break;
                 case WeaveService.EVENT_PROGRESS:
                     handler.post(MainActivity.this::updateInstallRing);
                     if (activeInstallId == null) break;
@@ -1255,6 +1279,7 @@ public final class MainActivity extends Activity {
         deviceFilter.addAction(WeaveService.EVENT_STORAGE_INFO);
         deviceFilter.addAction(WeaveService.EVENT_OPERATION);
         deviceFilter.addAction(WeaveService.EVENT_PROGRESS);
+        deviceFilter.addAction(WeaveService.EVENT_FIRMWARE_UPDATE);
         deviceFilter.addAction(WeaveService.EVENT_CATALOG_QUEUE);
         deviceFilter.addAction(WeaveService.EVENT_FAP_METADATA);
         deviceFilter.addAction(WeaveService.EVENT_SHOP_PROGRESS);
@@ -4053,7 +4078,8 @@ public final class MainActivity extends Activity {
         for (int kind = 0; kind < 2; kind++) {
             UpdateControl control = updateControls[kind];
             if (!control.busy && (control.lastCheck == 0 ||
-                    ("unknown".equals(control.state) && System.currentTimeMillis() - control.lastCheck > 60000L))) {
+                    ("unknown".equals(control.state) && System.currentTimeMillis() - control.lastCheck > 60000L) ||
+                    System.currentTimeMillis() - control.lastCheck > 300000L)) {
                 if (kind == UPDATE_APP || flipperIsConnected()) checkUpdate(kind);
             }
         }
@@ -4115,24 +4141,63 @@ public final class MainActivity extends Activity {
                 prefs.getString(WeaveService.KEY_FIRMWARE, "")) : null;
     }
 
+    private boolean hasInternetAccess() {
+        try {
+            android.net.ConnectivityManager manager =
+                    (android.net.ConnectivityManager)getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (manager == null) return false;
+            android.net.Network network = manager.getActiveNetwork();
+            if (network == null) return false;
+            android.net.NetworkCapabilities caps = manager.getNetworkCapabilities(network);
+            return caps != null && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        } catch (SecurityException ignored) { return false; }
+    }
+
     private void drawUpdateControl(int kind) {
         UpdateControl control = updateControls[kind];
         String current = updateCurrentVersion(kind);
-        String label = kind == UPDATE_FIRMWARE && !flipperIsConnected() ? "Flipper disconnected" :
+        boolean connected = flipperIsConnected();
+        boolean firmware = kind == UPDATE_FIRMWARE;
+        boolean canCompare = current != null && control.release != null &&
+                (!firmware || connected);
+        String status = control.checkingRelease ? "checking" : control.state;
+        // Never trust a prior UI label if a Flipper reconnected with a new version.
+        if (canCompare && !control.busy && control.lastCheck > 0 &&
+                !"unknown".equals(control.state))
+            status = WeaveUpdates.compare(current, control.release.version) < 0
+                    ? "available" : "current";
+        else if (firmware && !connected && !control.busy) status = "disconnected";
+        else if (!canCompare && !control.busy && "current".equals(status)) status = "unknown";
+        String label = firmware && !connected ? "Connect Flipper" :
                 current == null ? "Version unavailable" : "v" + current;
-        if (current != null && control.release != null &&
-                WeaveUpdates.compare(current, control.release.version) < 0 &&
-                ("available".equals(control.state) || control.busy)) {
+        if (canCompare && WeaveUpdates.compare(current, control.release.version) < 0 &&
+                ("available".equals(status) || control.busy))
             label += " → v" + control.release.version;
-        }
+        if (control.busy && firmware && "installing".equals(control.state))
+            label = "Installing on Flipper";
+        else if (!control.busy && control.error != null && !control.error.isEmpty())
+            label = firmware && !connected ? "Connect Flipper" : "Check failed · tap to retry";
         if (control.versionView != null) control.versionView.setText(label);
-        String state = kind == UPDATE_FIRMWARE && !flipperIsConnected() ? "unknown" : control.state;
-        String symbol = "available".equals(state) ? "↻" : "current".equals(state) ? "✓" : "?";
-        if (control.busy) symbol = "↓ " + control.percent + "%";
+        // The busy state shows progress, not an outdated check/update icon.
+        boolean verifiedCurrent = !control.busy && "current".equals(status);
+        boolean available = !control.busy && "available".equals(status);
+        boolean unknownOffline = !verifiedCurrent && !available && !hasInternetAccess() && !connected;
+        String symbol = control.busy ? (control.checkingRelease ? "Checking…" :
+                "installing".equals(control.state) ? "" + control.percent + "%" :
+                "↓ " + control.percent + "%") :
+                verifiedCurrent || available ? "" : unknownOffline ? "?" : "…";
+        if (control.statusIcon != null) {
+            if (verifiedCurrent || available) {
+                control.statusIcon.setImageResource(verifiedCurrent ?
+                        R.drawable.ic_update_current : R.drawable.ic_update_available);
+                control.statusIcon.setVisibility(View.VISIBLE);
+            } else control.statusIcon.setVisibility(View.GONE);
+        }
         if (control.buttonText != null) {
             control.buttonText.setText(symbol);
-            control.buttonText.setContentDescription(control.busy ? "Downloading " + control.percent + "%" :
-                    "available".equals(state) ? "Download update" : "Check for updates");
+            control.buttonText.setContentDescription(control.busy ? "Checking or installing update" :
+                    available ? "Install newer version" : verifiedCurrent ? "Up to date" :
+                    firmware && !connected ? "Connect a Flipper to check firmware" : "Retry update check");
         }
         if (control.progressTrack != null) {
             control.progressTrack.setBackground(rounded(control.busy ? 0xff733500 : ORANGE, ORANGE, 11));
@@ -4144,7 +4209,8 @@ public final class MainActivity extends Activity {
                     control.progressFill.setLayoutParams(lp); }
                 control.progressFill.setVisibility(control.busy ? View.VISIBLE : View.GONE);
             }
-            control.progressTrack.setEnabled(!control.busy);
+            control.progressTrack.setEnabled(!control.busy && !verifiedCurrent && (!firmware || connected));
+            control.progressTrack.setAlpha(verifiedCurrent ? 0.80f : 1f);
         }
     }
 
@@ -4214,6 +4280,8 @@ public final class MainActivity extends Activity {
         if (kind == UPDATE_FIRMWARE && !flipperIsConnected()) {
             control.state = "unknown"; toast("Flipper disconnected"); drawUpdateControl(kind); return;
         }
+        if ("current".equals(control.state) && control.release != null &&
+                WeaveUpdates.compare(updateCurrentVersion(kind), control.release.version) >= 0) return;
         if (!"available".equals(control.state) || control.release == null) {
             checkUpdate(kind); return;
         }
@@ -4243,23 +4311,41 @@ public final class MainActivity extends Activity {
     }
 
     private void presentDownloadedUpdate(int kind, File file) {
+        if (kind == UPDATE_FIRMWARE) {
+            if (!flipperIsConnected()) {
+                toast("Connect your Flipper to install firmware");
+                return;
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("Update Flipper firmware")
+                    .setMessage("Install the downloaded Weave firmware directly on your Flipper? " +
+                            "Keep your Flipper charged and connected until it restarts.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Install", (dialog, which) -> {
+                        UpdateControl control = updateControls[UPDATE_FIRMWARE];
+                        if (control.release == null ||
+                                WeaveUpdates.compare(updateCurrentVersion(UPDATE_FIRMWARE),
+                                        control.release.version) >= 0) return;
+                        control.busy = true;
+                        control.state = "installing";
+                        control.percent = 0;
+                        drawUpdateControl(UPDATE_FIRMWARE);
+                        startService(new Intent(this, WeaveService.class)
+                                .setAction(WeaveService.ACTION_INSTALL_FIRMWARE)
+                                .putExtra("version", control.release.version));
+                    }).show();
+            return;
+        }
         Uri source = new Uri.Builder().scheme("content")
                 .authority(getPackageName() + ".updates").appendPath(file.getName()).build();
         Intent intent;
         if (kind == UPDATE_APP) {
             intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(source, "application/vnd.android.package-archive");
-        } else {
-            // Firmware is a .tgz, not an APK. Hand it to a compatible updater;
-            // never claim a flash was completed just because the archive downloaded.
-            intent = new Intent(Intent.ACTION_SEND);
-            intent.setType("application/gzip");
-            intent.putExtra(Intent.EXTRA_STREAM, source);
-        }
+        } else return;
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
-            if (kind == UPDATE_FIRMWARE) startActivity(Intent.createChooser(intent, "Install firmware with Flipper Mobile App"));
-            else startActivity(intent);
+            startActivity(intent);
         } catch (Exception ignored) {
             toast("Update downloaded; open a compatible installer to apply it");
         }
@@ -4309,6 +4395,11 @@ public final class MainActivity extends Activity {
         button.setGravity(Gravity.CENTER);
         button.setTypeface(Typeface.DEFAULT_BOLD);
         progress.addView(button, new FrameLayout.LayoutParams(-1, -1));
+        ImageView statusIcon = new ImageView(this);
+        statusIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        FrameLayout.LayoutParams iconPosition = new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER);
+        progress.addView(statusIcon, iconPosition);
+        control.statusIcon = statusIcon;
         LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(-1, dp(39));
         buttonParams.topMargin = dp(13);
         tile.addView(progress, buttonParams);

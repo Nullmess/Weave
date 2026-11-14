@@ -97,11 +97,12 @@ final class WeaveUpdates {
             JSONObject asset = assets.optJSONObject(i);
             if (asset == null) continue;
             String name = asset.optString("name", "");
-            String lower = name.toLowerCase(Locale.ROOT);
-            boolean match = firmware ? lower.endsWith(".tgz") && lower.contains("firmware") : lower.endsWith(".apk") && lower.contains("android");
-            if (!match) continue;
+            String expected = "Weave-" + version + (firmware ? "-firmware.tgz" : "-android.apk");
+            if (!expected.equals(name)) continue;
             String url = asset.optString("browser_download_url", "");
-            if (!url.startsWith("https://github.com/" + REPO + "/releases/download/")) continue;
+            String expectedUrl = "https://github.com/" + REPO + "/releases/download/"
+                    + release.optString("tag_name", "") + "/" + expected;
+            if (!expectedUrl.equals(url)) continue;
             return new Release(version, name, url);
         }
         throw new java.io.IOException("No compatible published " + (firmware ? "firmware" : "Android") + " asset");

@@ -1024,6 +1024,24 @@ final class BleLink implements AutoCloseable {
         beginOperation("Remote Install Screen", FlipperRpc.weaveInstallScreenRequest(++commandId));
     }
     void mkdir(String path) { beginOperation("New folder", FlipperRpc.mkdirRequest(++commandId, path)); }
+    void firmwareMkdir(String path, String label) {
+        beginOperation(label, FlipperRpc.mkdirRequest(++commandId, path));
+    }
+    void prepareFirmwareUpdate(String manifest) {
+        try { beginOperation("Firmware Prepare", FlipperRpc.systemUpdateRequest(++commandId, manifest)); }
+        catch (IllegalArgumentException invalid) {
+            callbacks.operation("Firmware Prepare", false, invalid.getMessage());
+        }
+    }
+    void rebootForFirmwareUpdate() {
+        if (!rpcReady || operationId != 0 || uploading != null) {
+            callbacks.operation("Firmware Reboot", false, "Flipper RPC is busy");
+            return;
+        }
+        // The Flipper normally disconnects before it can acknowledge a reboot.
+        queuePacket(FlipperRpc.rebootUpdateRequest(++commandId));
+        callbacks.operation("Firmware Reboot", true, "Reboot sent; waiting for new firmware");
+    }
     void delete(String path, boolean recursive) {
         beginOperation("Delete", FlipperRpc.deleteRequest(++commandId, path, recursive));
     }
@@ -1071,7 +1089,8 @@ final class BleLink implements AutoCloseable {
 
     void upload(String path, byte[] data) { uploadFile(path, data, "Install"); }
     void uploadFile(String path, byte[] data, String label) {
-        if (!rpcReady || operationId != 0 || data == null || data.length == 0 || data.length > (NetworkMailbox.RESPONSE.equals(path) ? NetworkMailbox.MAX_BODY + 100 : 2_000_000)
+        if (!rpcReady || operationId != 0 || data == null || data.length == 0 || data.length > (label != null && label.equals("Firmware Upload") ? 16_000_000 :
+                NetworkMailbox.RESPONSE.equals(path) ? NetworkMailbox.MAX_BODY + 100 : 2_000_000)
                 || path == null || !(path.startsWith("/ext/") || path.startsWith("/int/"))) {
             callbacks.operation(label, false, "RPC unavailable or invalid file");
             return;
@@ -1094,7 +1113,8 @@ final class BleLink implements AutoCloseable {
         handler.removeCallbacks(screenInitialTimeout);
         screenSessionActive = false;
         queuePacket(FlipperRpc.streamRequest(++commandId, false));
-        handler.postDelayed(operationTimeout, NetworkMailbox.RESPONSE.equals(path) ? 1800000 : 300000);
+        handler.postDelayed(operationTimeout, ("Firmware Upload".equals(label) ||
+                NetworkMailbox.RESPONSE.equals(path)) ? 1800000 : 300000);
         // Never enqueue the whole file: generate each frame when the previous one left GATT.
         handler.postDelayed(uploadNextFrame, 75);
     }
@@ -1354,8 +1374,20 @@ final class BleLink implements AutoCloseable {
             }
             boolean launched = raw.status == 0 && "Launch".equals(operationName);
             boolean wasUpload = uploading != null;
-            finishOperation(raw.status == 0 && !uploadCancelRequested,
-                    uploadCancelRequested ? "Cancelled" :
+            boolean validFirmware = true;
+            String firmwareError = null;
+            if ("Firmware Prepare".equals(operationName)) {
+                try {
+                    int code = FlipperRpc.systemUpdateCode(raw.content);
+                    validFirmware = raw.type == FlipperRpc.SYSTEM_UPDATE_RESPONSE && code == 0;
+                    if (!validFirmware) firmwareError = "Flipper refused update preparation (code " + code + ")";
+                } catch (IOException invalid) {
+                    validFirmware = false;
+                    firmwareError = "Invalid firmware update response";
+                }
+            }
+            finishOperation(raw.status == 0 && !uploadCancelRequested && validFirmware,
+                    uploadCancelRequested ? "Cancelled" : firmwareError != null ? firmwareError :
                     raw.status == 0 ? null : (raw.status == 15 ?
                     "Flipper RPC error 15: invalid parameters (" + operationName + ")" :
                     "Flipper RPC error " + raw.status));

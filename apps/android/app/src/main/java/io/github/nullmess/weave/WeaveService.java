@@ -25,6 +25,7 @@ import android.media.ToneGenerator;
 import android.os.Vibrator;
 import android.os.VibrationEffect;
 
+import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.ArrayDeque;
@@ -95,6 +96,8 @@ public final class WeaveService extends Service {
     static final String ACTION_SYNC_SHOP = "io.github.nullmess.weave.SYNC_SHOP";
     static final String ACTION_READ_FILE = "io.github.nullmess.weave.READ_FILE";
     static final String ACTION_UPLOAD_FILE = "io.github.nullmess.weave.UPLOAD_FILE";
+    static final String ACTION_INSTALL_FIRMWARE = "io.github.nullmess.weave.INSTALL_FIRMWARE";
+    static final String EVENT_FIRMWARE_UPDATE = "io.github.nullmess.weave.FIRMWARE_UPDATE";
     static final String EVENT_FILE_DATA = "io.github.nullmess.weave.FILE_CONTENT";
     static final String ACTION_CLI_START = "io.github.nullmess.weave.CLI_START";
     static final String ACTION_CLI_SEND = "io.github.nullmess.weave.CLI_SEND";
@@ -158,9 +161,168 @@ public final class WeaveService extends Service {
     private volatile boolean usbConfirmed;
     private byte[] pendingInstallBytes;
     private String pendingInstallPath;
+    private volatile boolean bleConfirmed;
+
+    private static final class FirmwareJob {
+        final WeaveFirmwarePackage.Prepared packageFiles;
+        final String version, deviceKey;
+        int index;
+        String phase = "staging";
+        FirmwareJob(WeaveFirmwarePackage.Prepared packageFiles, String version, String deviceKey) {
+            this.packageFiles = packageFiles;
+            this.version = version;
+            this.deviceKey = deviceKey;
+        }
+    }
+    private FirmwareJob firmwareJob;
+    private boolean firmwareStaging;
+    private final Runnable firmwareVerifyTimeout = () -> {
+        if (firmwareJob != null && "rebooting".equals(firmwareJob.phase))
+            finishFirmwareJob(false, "Flipper rebooted but the installed firmware version could not be verified");
+    };
+    private final Runnable nextFirmwareMember = new Runnable() {
+        @Override public void run() {
+            FirmwareJob job = firmwareJob;
+            if (job == null || !"uploading".equals(job.phase)) return;
+            if (!bleConfirmed || ble == null || !job.deviceKey.equals(ble.connectedDeviceKey())) {
+                finishFirmwareJob(false, "Flipper disconnected during firmware upload");
+                return;
+            }
+            if (!ble.isIdleForShop()) {
+                handler.postDelayed(this, 400);
+                return;
+            }
+            if (job.index >= job.packageFiles.files.size()) {
+                job.phase = "preparing";
+                broadcastFirmwareUpdate("preparing", 99, null);
+                ble.prepareFirmwareUpdate(job.packageFiles.manifestPath);
+                return;
+            }
+            WeaveFirmwarePackage.Member member = job.packageFiles.files.get(job.index);
+            new Thread(() -> {
+                try {
+                    if (member.size > 16_000_000 || member.size <= 0)
+                        throw new java.io.IOException("Unsupported empty or oversized firmware entry");
+                    byte[] data = new byte[(int)member.size];
+                    try (java.io.FileInputStream stream = new java.io.FileInputStream(member.file)) {
+                        int offset = 0;
+                        while (offset < data.length) {
+                            int count = stream.read(data, offset, data.length - offset);
+                            if (count < 0) throw new java.io.IOException("Truncated staged firmware file");
+                            offset += count;
+                        }
+                    }
+                    handler.post(() -> {
+                        if (firmwareJob != job || !bleConfirmed ||
+                                !job.deviceKey.equals(ble.connectedDeviceKey())) return;
+                        ble.uploadFile(member.remotePath, data, "Firmware Upload");
+                    });
+                } catch (Exception error) {
+                    handler.post(() -> {
+                        if (firmwareJob == job) finishFirmwareJob(false, error.getMessage());
+                    });
+                }
+            }, "Weave-firmware-chunk").start();
+        }
+    };
+    private void broadcastFirmwareUpdate(String phase, int percent, String message) {
+        Intent event = new Intent(EVENT_FIRMWARE_UPDATE).setPackage(getPackageName());
+        event.putExtra("phase", phase).putExtra("percent", Math.max(0, Math.min(100, percent)));
+        if (message != null) event.putExtra("message", message);
+        if (firmwareJob != null) event.putExtra("version", firmwareJob.version);
+        sendBroadcast(event);
+    }
+    private void finishFirmwareJob(boolean ready, String message) {
+        handler.removeCallbacks(nextFirmwareMember);
+        handler.removeCallbacks(firmwareVerifyTimeout);
+        firmwareStaging = false;
+        broadcastFirmwareUpdate(ready ? "ready" : "error", ready ? 100 : 0, message);
+        firmwareJob = null;
+    }
+    private void startFirmwareInstall(Intent intent) {
+        String version = intent == null ? null : intent.getStringExtra("version");
+        if (firmwareJob != null || firmwareStaging || version == null || !version.matches("\\d+\\.\\d+\\.\\d+")) {
+            broadcastFirmwareUpdate("error", 0, "An update is already running or version is invalid");
+            return;
+        }
+        if (!bleConfirmed || ble == null || !ble.isRpcReady() || ble.connectedDeviceKey() == null ||
+                remoteInputLocked() || !ble.isIdleForShop()) {
+            broadcastFirmwareUpdate("error", 0, "Flipper is disconnected or busy");
+            return;
+        }
+        String firmwareRaw = prefs.getString(KEY_FIRMWARE, "");
+        java.util.regex.Matcher match = java.util.regex.Pattern.compile("(?i)\\bv?(\\d+\\.\\d+\\.\\d+)\\b")
+                .matcher(firmwareRaw);
+        if (match.find() && WeaveUpdates.compare(match.group(1), version) >= 0) {
+            broadcastFirmwareUpdate("ready", 100, "Flipper firmware is already up to date");
+            return;
+        }
+        String connectedKey = ble.connectedDeviceKey();
+        File archive = new File(getCacheDir(), "weave-updates/weave-firmware.tgz");
+        File stage = new File(getCacheDir(), "weave-updates/staged-" + version);
+        firmwareStaging = true;
+        broadcastFirmwareUpdate("staging", 0, null);
+        new Thread(() -> {
+            try {
+                WeaveFirmwarePackage.Prepared prepared = WeaveFirmwarePackage.extract(archive, stage, version);
+                handler.post(() -> {
+                    firmwareStaging = false;
+                    if (!bleConfirmed || !connectedKey.equals(ble.connectedDeviceKey()) ||
+                            !ble.isIdleForShop() || firmwareJob != null) {
+                        broadcastFirmwareUpdate("error", 0, "Flipper disconnected or became busy");
+                        return;
+                    }
+                    firmwareJob = new FirmwareJob(prepared, version, connectedKey);
+                    firmwareJob.phase = "mkdir_root";
+                    broadcastFirmwareUpdate("uploading", 0, null);
+                    ble.firmwareMkdir("/ext/update", "Firmware Mkdir Root");
+                });
+            } catch (Exception error) {
+                handler.post(() -> {
+                    firmwareStaging = false;
+                    broadcastFirmwareUpdate("error", 0,
+                            error.getMessage() == null ? "Invalid firmware bundle" : error.getMessage());
+                });
+            }
+        }, "Weave-firmware-extract").start();
+    }
+    private boolean handleFirmwareOperation(String operation, boolean success, String message) {
+        FirmwareJob job = firmwareJob;
+        if (job == null || operation == null || !operation.startsWith("Firmware ")) return false;
+        boolean alreadyExists = message != null && message.endsWith(" 6");
+        if ("Firmware Mkdir Root".equals(operation)) {
+            if (!success && !alreadyExists) finishFirmwareJob(false, message);
+            else { job.phase = "mkdir_package"; ble.firmwareMkdir(
+                    job.packageFiles.manifestPath.substring(0,
+                    job.packageFiles.manifestPath.lastIndexOf('/')), "Firmware Mkdir Package"); }
+        } else if ("Firmware Mkdir Package".equals(operation)) {
+            if (!success && !alreadyExists) finishFirmwareJob(false, message);
+            else { job.phase = "uploading"; handler.post(nextFirmwareMember); }
+        } else if ("Firmware Upload".equals(operation)) {
+            if (!success) finishFirmwareJob(false, message);
+            else {
+                job.index++;
+                broadcastFirmwareUpdate("uploading", Math.min(98,
+                        job.index * 98 / job.packageFiles.files.size()), null);
+                handler.postDelayed(nextFirmwareMember, 250);
+            }
+        } else if ("Firmware Prepare".equals(operation)) {
+            if (!success) finishFirmwareJob(false, message);
+            else {
+                job.phase = "rebooting";
+                broadcastFirmwareUpdate("rebooting", 100, null);
+                handler.removeCallbacks(firmwareVerifyTimeout);
+                handler.postDelayed(firmwareVerifyTimeout, 300000);
+                ble.rebootForFirmwareUpdate();
+            }
+        } else if ("Firmware Reboot".equals(operation)) {
+            if (!success) finishFirmwareJob(false, message);
+            // Expect a disconnect; success is verified only after a reconnect and version read.
+        }
+        return true;
+    }
     private final ArrayDeque<String> queuedDeletes = new ArrayDeque<>();
     private boolean deletingBatch;
-    private volatile boolean bleConfirmed;
     private static final String SHOP_INDEX = "/ext/.weave/shop.catalog";
     private static final String SHOP_REQUEST = "/ext/.weave/shop.request";
     private static final String SHOP_RESULT = "/ext/.weave/shop.result";
@@ -234,7 +396,8 @@ public final class WeaveService extends Service {
     private String shopPhase = "";
     /* Pendant un transfert, aucune commande GUI ne doit modifier un ecran non diffuse. */
     private boolean remoteInputLocked() {
-        return shopNetworkBusy || shopTransferActive || shopVerifying || pendingShopFap != null ||
+        return firmwareStaging || firmwareJob != null ||
+                shopNetworkBusy || shopTransferActive || shopVerifying || pendingShopFap != null ||
                 !catalogQueue.isEmpty() || activeCatalogJob != null ||
                 (shopRequestToken != null && ("downloading".equals(shopPhase) ||
                         "installing".equals(shopPhase)));
@@ -643,6 +806,10 @@ public final class WeaveService extends Service {
     private void drainCatalogQueueNow() {
         handler.removeCallbacks(drainCatalogQueue);
         if (stopping) return;
+        if (firmwareStaging || firmwareJob != null) {
+            if (!catalogQueue.isEmpty()) handler.postDelayed(drainCatalogQueue, 1500);
+            return;
+        }
         // A phone-queued app must never steal the local native Shop view while
         // that Shop is downloading, uploading, verifying, or animating home.
         if (nativeShopHomeToken != null || shopNetworkBusy || shopTransferActive ||
@@ -1723,6 +1890,8 @@ public final class WeaveService extends Service {
                 if (!usbConfirmed) connectBle();
             }
             @Override public void connected(boolean connected) {
+                if (!connected && firmwareJob != null && !"rebooting".equals(firmwareJob.phase))
+                    finishFirmwareJob(false, "Connection lost during firmware transfer");
                 // Diagnostic: compter les pertes radio, pas les transferts USB.
                 if (!connected && priorBluetoothLink && !ble.isUsbActive())
                     prefs.edit().putInt(KEY_BLE_DROPS,
@@ -1988,6 +2157,7 @@ public final class WeaveService extends Service {
                         return;
                     }
                 }
+                if (handleFirmwareOperation(operation, success, message)) return;
                 if ("Remote Install Prepare".equals(operation)) {
                     if (!success || activeCatalogJob == null) {
                         if (activeCatalogJob != null) finishCatalogJob(false,
@@ -2187,6 +2357,12 @@ public final class WeaveService extends Service {
                     handler.postDelayed(() -> ble.requestStorageInfo("/ext"), 650);
             }
             @Override public void progress(String operation, int percent) {
+                if ("Firmware Upload".equals(operation) && firmwareJob != null) {
+                    FirmwareJob job = firmwareJob;
+                    int value = Math.min(98, (int)(((job.index + percent / 100.0) * 98)
+                            / job.packageFiles.files.size()));
+                    broadcastFirmwareUpdate("uploading", value, null);
+                }
                 if ("Shop Install".equals(operation) && shopTransferActive && shopRequestToken != null) {
                     // BLE RPC reports bytes acknowledged. Preserve 100% for inventory verification.
                     int bounded = Math.min(99, Math.max(0, percent));
@@ -2206,7 +2382,14 @@ public final class WeaveService extends Service {
             @Override public void information(String field, String value) {
                 if (!bleConfirmed) return;
                 if ("battery".equals(field)) prefs.edit().putString(KEY_BATTERY, value).apply();
-                else if ("firmware".equals(field)) prefs.edit().putString(KEY_FIRMWARE, value).apply();
+                else if ("firmware".equals(field)) {
+                    prefs.edit().putString(KEY_FIRMWARE, value).apply();
+                    FirmwareJob job = firmwareJob;
+                    if (job != null && "rebooting".equals(job.phase) && value != null &&
+                            job.deviceKey.equals(ble.connectedDeviceKey()) &&
+                            value.matches(".*(?<![0-9])v?" + java.util.regex.Pattern.quote(job.version) + "(?![0-9]).*"))
+                        finishFirmwareJob(true, "Firmware version verified on Flipper");
+                }
                 else if ("name".equals(field)) prefs.edit().putString(KEY_DEVICE_NAME, value).apply();
                 else if ("api_version".equals(field) && value != null && value.matches("[0-9]+\\.[0-9]+")) {
                     String deviceKey = ble.connectedDeviceKey();
@@ -2475,6 +2658,8 @@ public final class WeaveService extends Service {
                     continueBatchDelete();
                 }
             }
+        } else if (ACTION_INSTALL_FIRMWARE.equals(action)) {
+            startFirmwareInstall(intent);
         } else if (ACTION_CLI_START.equals(action)) {
             if (bleConfirmed && remoteInputLocked()) {
                 emitCli("\n[Flipper installation in progress; retry CLI after completion]\n");

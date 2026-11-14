@@ -17,6 +17,7 @@ final class FlipperRpc {
     static final int GUI_FRAME = 22, GUI_INPUT_REQUEST = 23;
     static final int APP_START_REQUEST = 16, SYSTEM_DEVICE_INFO_REQUEST = 32;
     static final int SYSTEM_DEVICE_INFO_RESPONSE = 33;
+    static final int SYSTEM_UPDATE_REQUEST = 41, SYSTEM_UPDATE_RESPONSE = 46;
 
 
     static final class Item {
@@ -93,6 +94,31 @@ final class FlipperRpc {
     static byte[] rebootDfuRequest(int id) {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         writeVarField(body, 1, 1);
+        return message(id, 31, body.toByteArray());
+    }
+
+    /** Official PB_System.UpdateRequest, after every archive member is on /ext/update. */
+    static byte[] systemUpdateRequest(int id, String manifest) {
+        if (manifest == null || !manifest.matches("/ext/update/f7-update-\\d+\\.\\d+\\.\\d+/update\\.fuf"))
+            throw new IllegalArgumentException("Untrusted firmware manifest path");
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        writeTextField(body, 1, manifest);
+        return message(id, SYSTEM_UPDATE_REQUEST, body.toByteArray());
+    }
+    static int systemUpdateCode(byte[] content) throws IOException {
+        Reader reader = new Reader(content);
+        int result = 0;
+        while (reader.available()) {
+            long tag = reader.varint();
+            if ((tag >>> 3) == 1 && (tag & 7) == 0) result = (int)reader.varint();
+            else reader.skip((int)(tag & 7));
+        }
+        return result;
+    }
+    /** PB_System.RebootRequest(mode=UPDATE=2). Used ONLY after successful prepare. */
+    static byte[] rebootUpdateRequest(int id) {
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        writeVarField(body, 1, 2);
         return message(id, 31, body.toByteArray());
     }
 
