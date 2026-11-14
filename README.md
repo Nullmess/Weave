@@ -1,16 +1,28 @@
 <p align="center">
-  <img src="firmware/assets/branding/Weave.png" width="160" alt="Weave logo">
+    <img src="firmware/assets/branding/Weave.png" width="160" alt="Weave">
 </p>
 
-<p align="center"><strong>Weave</strong></p>
+<h1 align="center">
+    <strong>Weave</strong>
+</h1>
 
 <p align="center">🧵 Flipper Zero firmware for network access without Wi-Fi hardware.</p>
 
+<p align="center">
+    <a href="https://github.com/nullmess/Weave/releases/latest">
+        <img src="https://img.shields.io/github/v/release/nullmess/Weave?style=flat&label=release" alt="Release">
+    </a>
+    <a href="LICENSE">
+        <img src="https://img.shields.io/github/license/nullmess/Weave?style=flat" alt="License">
+    </a>
+    <img src="https://hits.sh/github.com/nullmess/Weave.svg?label=views" alt="Views">
+</p>
+
 ---
 
-<center>
-<img src=".github/assets/recap.gif" width="200" alt="Weave Android companion preview">
-</center>
+<p align="center">
+  <img src=".github/assets/recap.gif" width="200" alt="Weave Android companion preview">
+</p>
 
 
 ---
