@@ -10,9 +10,9 @@
 
 ---
 
-<center>
-<img src=".github/assets/recap.gif" width="200" alt="Weave Android companion preview">
-</center>
+<p align="center">
+  <img src=".github/assets/recap.gif" width="235" alt="Weave Android companion preview">
+</p>
 
 
 ---
