@@ -1,22 +1,56 @@
-name: Weave — build and release
-run-name: Weave build from ${{ github.ref_name }}
+name: Weave — build and update existing release
+run-name: Weave build / update existing release (${{ github.ref_name }})
 
-# Manually run from GitHub > Actions > Weave > Run workflow.
-# No personal access token, GH_TOKEN or local CLI authentication is required.
+# Run manually. The workflow uploads to the newest *existing* GitHub Release.
+# It never creates a release, a tag, or edits the release notes.
 on:
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: Publish a GitHub Release after all five builds pass (requires Android signing secrets)
-        type: boolean
-        default: false
-        required: true
 
 permissions:
   contents: read
 
+# Avoid simultaneous runs replacing the same release assets.
+concurrency:
+  group: weave-release-assets-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify VERSION and locate the most recently created release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python firmware/site_scons/tools/check_version.py
+          version=$(cat VERSION)
+          # Numeric release IDs reflect creation order; unlike /releases/latest,
+          # this includes prereleases and manually created draft releases.
+          releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100")
+          latest=$(jq -ec 'if length == 0 then error("No GitHub release exists") else max_by(.id) end' <<< "$releases")
+          tag=$(jq -er '.tag_name' <<< "$latest")
+          id=$(jq -er '.id' <<< "$latest")
+          if [[ "$tag" != "v${version}" && "$tag" != "$version" ]]; then
+            echo "::error::Newest release has tag '$tag'; expected 'v${version}' or '${version}'. Create the correct release manually first."
+            exit 1
+          fi
+          if [[ $(jq -r '.immutable // false' <<< "$latest") == true ]]; then
+            echo "::error::The existing release '$tag' is immutable; its assets cannot be replaced."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Targeting existing release: $tag (ID $id)"
+
   firmware:
+    needs: preflight
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +68,7 @@ jobs:
           if-no-files-found: error
 
   android:
+    needs: preflight
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -41,51 +76,55 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK (without discontinued tools package)
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+      - name: Install Android SDK 35
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
       - name: Check consistent version
         run: python firmware/site_scons/tools/check_version.py
-      - name: Prepare Android keystore when configured
+      - name: Prepare release signing keystore
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.WEAVE_ANDROID_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.WEAVE_ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.WEAVE_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.WEAVE_ANDROID_KEY_PASSWORD }}
         run: |
-          if [[ -n "$KEYSTORE_B64" ]]; then
-            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/weave-release.jks"
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_B64" || -z "$STORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo '::error::Missing Android release signing secrets. Refusing to publish a debug-signed APK.'
+            exit 1
           fi
-      - name: Build Android APK
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/weave-release.jks"
+          test -s "$RUNNER_TEMP/weave-release.jks"
+          chmod 600 "$RUNNER_TEMP/weave-release.jks"
+      - name: Build signed Android release APK
         working-directory: apps/android
+        shell: bash
         env:
           WEAVE_ANDROID_KEYSTORE: ${{ runner.temp }}/weave-release.jks
           WEAVE_ANDROID_STORE_PASSWORD: ${{ secrets.WEAVE_ANDROID_STORE_PASSWORD }}
           WEAVE_ANDROID_KEY_ALIAS: ${{ secrets.WEAVE_ANDROID_KEY_ALIAS }}
           WEAVE_ANDROID_KEY_PASSWORD: ${{ secrets.WEAVE_ANDROID_KEY_PASSWORD }}
-        shell: bash
         run: |
           set -euo pipefail
-          if [[ -s "$WEAVE_ANDROID_KEYSTORE" && -n "$WEAVE_ANDROID_STORE_PASSWORD" && -n "$WEAVE_ANDROID_KEY_ALIAS" && -n "$WEAVE_ANDROID_KEY_PASSWORD" ]]; then
-            python ../../firmware/site_scons/tools/bootstrap_tools.py gradle --no-daemon --gradle-user-home ../../${{ runner.temp }}/weave-gradle-cache :app:assembleRelease
-            echo "APK_PATH=build/.work/android/app/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
-          else
-            if [[ "${{ inputs.publish_release }}" == 'true' ]]; then
-              echo 'Release signing secrets required for publishing.' >&2
-              exit 1
-            fi
-            unset WEAVE_ANDROID_KEYSTORE
-            python ../../firmware/site_scons/tools/bootstrap_tools.py gradle --no-daemon --gradle-user-home ../../${{ runner.temp }}/weave-gradle-cache :app:assembleDebug
-            echo "APK_PATH=build/.work/android/app/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
-            echo 'Development build: debug-signed APK (do not publish as final release).'
-          fi
+          python ../../firmware/site_scons/tools/bootstrap_tools.py gradle \
+            --no-daemon --gradle-user-home "$RUNNER_TEMP/weave-gradle-cache" :app:assembleRelease
+          echo "APK_PATH=build/.work/android/app/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
       - name: Verify Android APK signature
         shell: bash
         run: |
           set -euo pipefail
+          test -s "$APK_PATH"
           apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           test -n "$apksigner"
-          "$apksigner" verify --verbose "$APK_PATH"
-      - name: Package APK
+          "$apksigner" verify --verbose --print-certs "$APK_PATH"
+      - name: Package Android APK
         run: python firmware/site_scons/tools/release_asset.py android --input "$APK_PATH" --output build
       - uses: actions/upload-artifact@v4
         with:
@@ -94,6 +133,7 @@ jobs:
           if-no-files-found: error
 
   desktop:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -102,7 +142,7 @@ jobs:
             platform: windows
           - os: ubuntu-24.04
             platform: linux
-          - os: macos-14
+          - os: macos-15
             platform: macos
     runs-on: ${{ matrix.os }}
     steps:
@@ -139,8 +179,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: ${{ inputs.publish_release }}
-    needs: [firmware, android, desktop]
+    needs: [preflight, firmware, android, desktop]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -150,26 +189,56 @@ jobs:
         with:
           path: release
           merge-multiple: true
-      - name: Validate five assets and version
+      - name: Validate all five release assets
         shell: bash
         run: |
           set -euo pipefail
           python firmware/site_scons/tools/check_version.py
-          version=$(cat VERSION)
-          for file in \
-            "Weave-${version}-firmware.tgz" \
-            "Weave-${version}-android.apk" \
-            "Weave-${version}-windows.zip" \
-            "Weave-${version}-linux.zip" \
-            "Weave-${version}-macos.zip"; do
-            test -s "release/$file" || { echo "Missing $file" >&2; exit 1; }
-          done
-      - name: Publish release (using built-in GITHUB_TOKEN)
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path('firmware/site_scons/tools').resolve()))
+          from build_all import VERSION, validate_files
+          validate_files(Path('release'), VERSION)
+          print(f'Validated all five Weave {VERSION} release assets')
+          PY
+      - name: Replace assets in existing release only
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_TAG: ${{ needs.preflight.outputs.tag }}
+          TARGET_ID: ${{ needs.preflight.outputs.id }}
         run: |
           set -euo pipefail
           version=$(cat VERSION)
-          gh release create "v${version}" release/* \
-            --target "$GITHUB_SHA" --title "Weave ${version}" --generate-notes
+          # Verify the selected release still exists and was not replaced.
+          current_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TARGET_TAG}" --jq '.id')
+          if [[ "$current_id" != "$TARGET_ID" ]]; then
+            echo '::error::Release changed during the build; refusing to upload assets.'
+            exit 1
+          fi
+          files=(
+            "release/Weave-${version}-firmware.tgz"
+            "release/Weave-${version}-android.apk"
+            "release/Weave-${version}-windows.zip"
+            "release/Weave-${version}-linux.zip"
+            "release/Weave-${version}-macos.zip"
+          )
+          for file in "${files[@]}"; do test -s "$file"; done
+          # Clobber replaces previously uploaded files of the same name.
+          # Uploads only to a previously created release.
+          gh release upload "$TARGET_TAG" "${files[@]}" --clobber
+          # Once upload succeeded, delete obsolete Weave versioned assets only.
+          # Leave any user-provided attachments and the release metadata intact.
+          while IFS= read -r asset; do
+            if [[ "$asset" =~ ^Weave-[0-9]+\.[0-9]+\.[0-9]+-(firmware\.tgz|android\.apk|(windows|linux|macos)\.zip)$ ]]; then
+              keep=false
+              for file in "${files[@]}"; do
+                if [[ "$asset" == "${file##*/}" ]]; then keep=true; break; fi
+              done
+              if [[ "$keep" == false ]]; then
+                gh release delete-asset "$TARGET_TAG" "$asset" --yes
+              fi
+            fi
+          done < <(gh release view "$TARGET_TAG" --json assets --jq '.assets[].name')
+          echo "Updated existing release $TARGET_TAG with all five Weave $version files."

@@ -1,36 +1,32 @@
 <p align="center">
-    <img src="firmware/assets/branding/Weave.png" width="160" alt="Weave">
+  <img src="firmware/assets/branding/Weave.png" width="160" alt="Weave logo">
 </p>
 
-<h1 align="center">
-    <strong>Weave</strong>
-</h1>
+<p align="center"><strong>Weave</strong></p>
 
 <p align="center">🧵 Flipper Zero firmware for network access without Wi-Fi hardware.</p>
 
-<p align="center">
-    <a href="https://github.com/nullmess/Weave/releases/latest">
-        <img src="https://img.shields.io/github/v/release/nullmess/Weave?style=flat&label=release" alt="Release">
-    </a>
-    <a href="LICENSE">
-        <img src="https://img.shields.io/github/license/nullmess/Weave?style=flat" alt="License">
-    </a>
-    <img src="https://hits.sh/github.com/nullmess/Weave.svg?label=views" alt="Views">
-</p>
-
 ---
 
-<p align="center">
-  <img src=".github/assets/recap.gif" width="200" alt="Weave Android companion preview">
-</p>
+## Social preview
 
+<table align="center">
+  <tr>
+    <td width="70%" align="center" valign="top">
+      <img src=".github/assets/weave-social.png" width="600" alt="Weave social preview">
+    </td>
+    <td width="30%" align="center" valign="top">
+      <img src=".github/assets/recap.png" width="235" alt="Weave Android companion preview">
+    </td>
+  </tr>
+</table>
 
 ---
 
 ## ✨ Features
 
 - Native networking for FAPs over USB/Bluetooth.
-- File, app and system managementon Flipper Zero.
+- File, app and system management on Flipper Zero.
 - Companion apps for Android, Windows, Linux and macOS.
 - Extended device controls and radio features.
 
