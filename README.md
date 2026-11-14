@@ -8,10 +8,17 @@
 
 ---
 
+<center>
+<img src=".github/assets/recap.gif" width="200" alt="Weave Android companion preview">
+</center>
+
+
+---
+
 ## ✨ Features
 
 - Native networking for FAPs over USB/Bluetooth.
-- File, app and system management on Flipper Zero.
+- File, app and system managementon Flipper Zero.
 - Companion apps for Android, Windows, Linux and macOS.
 - Extended device controls and radio features.
 
