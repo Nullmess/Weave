@@ -202,6 +202,7 @@ public final class MainActivity extends Activity {
     // A detail swipe belongs to one FAP, never to the entire Apps catalog.
     private String gestureRefreshAppId;
     private int gestureSettingsChecksPending;
+    private boolean gestureSettingsFirmwarePending;
     private long gestureRefreshToken;
     private final Runnable gestureRefreshFailsafe = () -> {
         if (gestureRefreshActive && gestureRefreshPage == HOME &&
@@ -287,7 +288,7 @@ public final class MainActivity extends Activity {
         float dx = event.getRawX() - gestureStartX;
         float dy = event.getRawY() - gestureStartY;
         boolean eligible = dy > 0 ? gestureCanPullDown : gestureCanPushUp;
-        boolean stillAtEdge = gestureScrollTarget == null ||
+        boolean stillAtEdge = selectedPage == SETTINGS || gestureScrollTarget == null ||
                 !gestureScrollTarget.canScrollVertically(dy > 0 ? -1 : 1);
         if (eligible && stillAtEdge && Math.abs(dy) >= dp(90) &&
                 Math.abs(dy) > Math.abs(dx) * 1.35f) {
@@ -407,7 +408,7 @@ public final class MainActivity extends Activity {
                 // SCAN refreshes real device information when connected and
                 // discovers devices when disconnected (same service path as Home).
                 if (activeBadgeJob() == null &&
-                        prefs.getBoolean(WeaveService.KEY_ENABLED, false))
+                        prefs.getBoolean(WeaveService.KEY_ENABLED, false) && !flipperIsConnected())
                     command(WeaveService.ACTION_SCAN);
                 refresh();
                 if (settingsInfoOpen) {
@@ -417,9 +418,16 @@ public final class MainActivity extends Activity {
                                 gestureRefreshToken == refreshToken) finishGestureRefresh();
                     }, 850);
                 } else {
-                    gestureSettingsChecksPending = 2;
-                    checkUpdate(UPDATE_APP, () -> completeSettingsGestureCheck(refreshToken));
-                    checkUpdate(UPDATE_FIRMWARE, () -> completeSettingsGestureCheck(refreshToken));
+                    boolean needsFirmwareVersion = flipperIsConnected();
+                    gestureSettingsFirmwarePending = needsFirmwareVersion;
+                    gestureSettingsChecksPending = needsFirmwareVersion ? 3 : 2;
+                    // Refresh both GitHub assets, even if an automatic check is
+                    // already running, plus ask the Flipper for its installed
+                    // version over the currently active USB/BLE RPC transport.
+                    android.util.Log.d("WeaveUpdates", "Manual Settings refresh: App + Firmware");
+                    if (needsFirmwareVersion) requestInstalledFirmwareVersion();
+                    checkUpdate(UPDATE_APP, () -> completeSettingsGestureCheck(refreshToken), true);
+                    checkUpdate(UPDATE_FIRMWARE, () -> completeSettingsGestureCheck(refreshToken), true);
                 }
                 break;
             default:
@@ -433,6 +441,38 @@ public final class MainActivity extends Activity {
                 settingsInfoOpen || gestureRefreshToken != token) return;
         if (gestureSettingsChecksPending > 0 && --gestureSettingsChecksPending == 0)
             finishGestureRefresh();
+    }
+
+    private void completeSettingsFirmwareRead() {
+        if (!gestureSettingsFirmwarePending) return;
+        gestureSettingsFirmwarePending = false;
+        completeSettingsGestureCheck(gestureRefreshToken);
+    }
+
+    private void requestInstalledFirmwareVersion() {
+        if (!flipperIsConnected()) return;
+        firmwareVersionReadPending = true;
+        firmwareVersionReadFailed = false;
+        prefs.edit().remove(WeaveService.KEY_FIRMWARE).apply();
+        UpdateControl control = updateControls[UPDATE_FIRMWARE];
+        control.state = "waiting_version";
+        control.error = "";
+        drawUpdateControl(UPDATE_FIRMWARE);
+        handler.removeCallbacks(firmwareVersionReadTimeout);
+        handler.postDelayed(firmwareVersionReadTimeout, 20000);
+        try {
+            Intent request = new Intent(this, WeaveService.class)
+                    .setAction(WeaveService.ACTION_REFRESH_DEVICE_VERSION);
+            startService(request);
+        } catch (RuntimeException error) {
+            firmwareVersionReadPending = false;
+            firmwareVersionReadFailed = true;
+            handler.removeCallbacks(firmwareVersionReadTimeout);
+            control.state = "unknown";
+            control.error = "Unable to query the connected Flipper";
+            drawUpdateControl(UPDATE_FIRMWARE);
+            completeSettingsFirmwareRead();
+        }
     }
 
     private void refreshCurrentAppDetail(long token) {
@@ -490,6 +530,7 @@ public final class MainActivity extends Activity {
         gestureFilesExpectedPath = null;
         gestureRefreshAppId = null;
         gestureSettingsChecksPending = 0;
+        gestureSettingsFirmwarePending = false;
         if (gestureRefreshAnimator != null) gestureRefreshAnimator.cancel();
         gestureRefreshAnimator = null;
         if (gestureRefreshIndicator != null) {
@@ -892,6 +933,7 @@ public final class MainActivity extends Activity {
         int percent;
         boolean busy;
         boolean checkingRelease;
+        int releaseCheckEpoch;
         final List<Runnable> pendingCheckListeners = new ArrayList<>();
         WeaveUpdates.Release release;
         TextView versionView, buttonText;
@@ -900,6 +942,20 @@ public final class MainActivity extends Activity {
         View progressFill;
     }
     private final UpdateControl[] updateControls = {new UpdateControl(), new UpdateControl()};
+    private boolean firmwareVersionReadPending;
+    private boolean firmwareVersionReadFailed;
+    private final Runnable firmwareVersionReadTimeout = () -> {
+        if (!firmwareVersionReadPending) return;
+        firmwareVersionReadPending = false;
+        UpdateControl control = updateControls[UPDATE_FIRMWARE];
+        if (updateCurrentVersion(UPDATE_FIRMWARE) == null) {
+            firmwareVersionReadFailed = true;
+            control.state = "unknown";
+            control.error = "Flipper firmware version RPC timed out";
+        }
+        drawUpdateControl(UPDATE_FIRMWARE);
+        completeSettingsFirmwareRead();
+    };
     private long lastServiceRestart;
     private boolean blePermissionPromptedThisSession;
     private Button usbButton, bleScanButton, bleConnectButton;
@@ -1202,6 +1258,28 @@ public final class MainActivity extends Activity {
                              segment.contains("USB CLI connected") || segment.contains("USB CLI disconnected")))
                         renderTerminalPanel(true);
                     break;
+                case WeaveService.EVENT_DEVICE_VERSION:
+                    firmwareVersionReadPending = false;
+                    handler.removeCallbacks(firmwareVersionReadTimeout);
+                    UpdateControl deviceUpdate = updateControls[UPDATE_FIRMWARE];
+                    String firmwareError = intent.getStringExtra("error");
+                    if (firmwareError != null && updateCurrentVersion(UPDATE_FIRMWARE) == null) {
+                        firmwareVersionReadFailed = true;
+                        deviceUpdate.state = "unknown";
+                        deviceUpdate.error = firmwareError;
+                    } else if (updateCurrentVersion(UPDATE_FIRMWARE) != null) {
+                        firmwareVersionReadFailed = false;
+                        deviceUpdate.error = "";
+                        if (deviceUpdate.release != null && !deviceUpdate.busy) {
+                            deviceUpdate.state = WeaveUpdates.compare(
+                                    updateCurrentVersion(UPDATE_FIRMWARE), deviceUpdate.release.version) < 0
+                                            ? "available" : "current";
+                        }
+                    }
+                    if (selectedPage == SETTINGS && !settingsInfoOpen)
+                        drawUpdateControl(UPDATE_FIRMWARE);
+                    completeSettingsFirmwareRead();
+                    break;
                 case WeaveService.EVENT_FIRMWARE_UPDATE:
                     String phase = intent.getStringExtra("phase");
                     UpdateControl firmwareUpdate = updateControls[UPDATE_FIRMWARE];
@@ -1280,6 +1358,7 @@ public final class MainActivity extends Activity {
         deviceFilter.addAction(WeaveService.EVENT_OPERATION);
         deviceFilter.addAction(WeaveService.EVENT_PROGRESS);
         deviceFilter.addAction(WeaveService.EVENT_FIRMWARE_UPDATE);
+        deviceFilter.addAction(WeaveService.EVENT_DEVICE_VERSION);
         deviceFilter.addAction(WeaveService.EVENT_CATALOG_QUEUE);
         deviceFilter.addAction(WeaveService.EVENT_FAP_METADATA);
         deviceFilter.addAction(WeaveService.EVENT_SHOP_PROGRESS);
@@ -4056,6 +4135,20 @@ public final class MainActivity extends Activity {
         info.setOnClickListener(v -> showSettingsInfo());
         settings.addView(info);
 
+        LinearLayout updatesHeader = new LinearLayout(this);
+        updatesHeader.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams updatesHeaderParams = new LinearLayout.LayoutParams(-1, dp(39));
+        updatesHeaderParams.topMargin = dp(12);
+        root.addView(updatesHeader, updatesHeaderParams);
+        TextView updatesTitle = text("Updates", 15, WHITE);
+        updatesTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        updatesHeader.addView(updatesTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        ImageView updatesRefresh = statusIcon(R.drawable.ic_apps_refresh, ORANGE);
+        updatesRefresh.setContentDescription("Refresh app and firmware updates");
+        updatesRefresh.setPadding(dp(8), dp(8), dp(8), dp(8));
+        updatesRefresh.setOnClickListener(v -> beginGestureRefresh());
+        updatesHeader.addView(updatesRefresh, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
         LinearLayout updates = new LinearLayout(this);
         updates.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams updatesParams = new LinearLayout.LayoutParams(-1, -2);
@@ -4080,7 +4173,7 @@ public final class MainActivity extends Activity {
             if (!control.busy && (control.lastCheck == 0 ||
                     ("unknown".equals(control.state) && System.currentTimeMillis() - control.lastCheck > 60000L) ||
                     System.currentTimeMillis() - control.lastCheck > 300000L)) {
-                if (kind == UPDATE_APP || flipperIsConnected()) checkUpdate(kind);
+                checkUpdate(kind);
             }
         }
     }
@@ -4126,10 +4219,8 @@ public final class MainActivity extends Activity {
     private static String installedFirmwareVersion(String raw) {
         if (raw == null || raw.trim().isEmpty()) return null;
         String value = raw.trim();
-        // Builds produced from a source ZIP may report a source archive marker
-        // instead of the version that was baked into this Weave firmware release.
-        if (value.toLowerCase(Locale.ROOT).startsWith("source archive"))
-            return BuildConfig.VERSION_NAME;
+        // Never substitute the Android app version for a missing Flipper
+        // version: both components can be updated independently.
         java.util.regex.Matcher version = java.util.regex.Pattern.compile(
                 "(?i)(?:^|\\b)v?(\\d+\\.\\d+\\.\\d+)(?:$|\\b)").matcher(value);
         return version.find() ? version.group(1) : null;
@@ -4161,14 +4252,22 @@ public final class MainActivity extends Activity {
         boolean canCompare = current != null && control.release != null &&
                 (!firmware || connected);
         String status = control.checkingRelease ? "checking" : control.state;
-        // Never trust a prior UI label if a Flipper reconnected with a new version.
-        if (canCompare && !control.busy && control.lastCheck > 0 &&
-                !"unknown".equals(control.state))
+        // The firmware version can arrive *after* GitHub responds. Reconcile
+        // a successful release check with the latest verified device version;
+        // never retain the initial unknown/waiting status indefinitely.
+        if (canCompare && !control.busy && control.lastCheck > 0) {
             status = WeaveUpdates.compare(current, control.release.version) < 0
                     ? "available" : "current";
+            // Make the click handler agree with the icon without another
+            // network request when the device version arrived after GitHub.
+            control.state = status;
+            control.error = "";
+        }
         else if (firmware && !connected && !control.busy) status = "disconnected";
         else if (!canCompare && !control.busy && "current".equals(status)) status = "unknown";
         String label = firmware && !connected ? "Connect Flipper" :
+                current == null && firmware && "waiting_version".equals(control.state)
+                        ? "Reading Flipper version…" :
                 current == null ? "Version unavailable" : "v" + current;
         if (canCompare && WeaveUpdates.compare(current, control.release.version) < 0 &&
                 ("available".equals(status) || control.busy))
@@ -4185,7 +4284,9 @@ public final class MainActivity extends Activity {
         String symbol = control.busy ? (control.checkingRelease ? "Checking…" :
                 "installing".equals(control.state) ? "" + control.percent + "%" :
                 "↓ " + control.percent + "%") :
-                verifiedCurrent || available ? "" : unknownOffline ? "?" : "…";
+                verifiedCurrent || available ? "" : unknownOffline ? "?" :
+                firmware && connected && "waiting_version".equals(control.state)
+                        ? "Reading…" : "Retry";
         if (control.statusIcon != null) {
             if (verifiedCurrent || available) {
                 control.statusIcon.setImageResource(verifiedCurrent ?
@@ -4214,7 +4315,7 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void checkUpdate(int kind) { checkUpdate(kind, null); }
+    private void checkUpdate(int kind) { checkUpdate(kind, null, false); }
 
     private void finishUpdateCheck(int kind) {
         UpdateControl control = updateControls[kind];
@@ -4227,30 +4328,21 @@ public final class MainActivity extends Activity {
         for (Runnable listener : listeners) listener.run();
     }
 
-    private void checkUpdate(int kind, Runnable afterCheck) {
+    private void checkUpdate(int kind, Runnable afterCheck, boolean force) {
         UpdateControl control = updateControls[kind];
-        if (control.busy) {
+        if (control.busy && (!force || !control.checkingRelease)) {
             if (afterCheck != null) {
                 if (control.checkingRelease) control.pendingCheckListeners.add(afterCheck);
                 else afterCheck.run(); // A download is not a release check.
             }
             return;
         }
-        if (kind == UPDATE_FIRMWARE && !flipperIsConnected()) {
-            control.state = "unknown"; control.error = "Flipper disconnected";
-            drawUpdateControl(kind);
-            if (afterCheck != null) afterCheck.run();
-            return;
-        }
-        String current = updateCurrentVersion(kind);
-        if (current == null) {
-            control.state = "unknown";
-            drawUpdateControl(kind);
-            if (afterCheck != null) afterCheck.run();
-            return;
-        }
+        // A Settings refresh always checks BOTH GitHub assets. Reading the
+        // installed firmware version over RPC is independent and may finish
+        // after this HTTPS request (or after a Flipper reconnect).
         control.busy = true;
         control.checkingRelease = true;
+        final int epoch = ++control.releaseCheckEpoch;
         if (afterCheck != null) control.pendingCheckListeners.add(afterCheck);
         control.percent = 0;
         drawUpdateControl(kind);
@@ -4258,15 +4350,29 @@ public final class MainActivity extends Activity {
             try {
                 WeaveUpdates.Release release = WeaveUpdates.latest(kind == UPDATE_FIRMWARE);
                 handler.post(() -> {
+                    if (epoch != control.releaseCheckEpoch) return; // Superseded by a manual refresh.
                     control.release = release;
-                    control.state = WeaveUpdates.compare(current, release.version) < 0 ? "available" : "current";
-                    control.error = "";
+                    // Never compare against a stale device version captured
+                    // before the network request, nor claim current on null.
+                    String installed = updateCurrentVersion(kind);
+                    control.state = installed == null ?
+                            kind == UPDATE_FIRMWARE && firmwareVersionReadFailed ?
+                                    "unknown" : "waiting_version" :
+                            WeaveUpdates.compare(installed, release.version) < 0
+                                    ? "available" : "current";
+                    control.error = kind == UPDATE_FIRMWARE && firmwareVersionReadFailed ?
+                            "Flipper firmware version unavailable over RPC" : "";
+                    android.util.Log.d("WeaveUpdates", (kind == UPDATE_APP ? "App" : "Firmware") +
+                            " release v" + release.version + ", installed " + installed);
                     control.lastCheck = System.currentTimeMillis();
                     finishUpdateCheck(kind);
                 });
             } catch (Exception e) {
                 handler.post(() -> {
+                    if (epoch != control.releaseCheckEpoch) return;
                     control.state = "unknown"; control.error = e.getMessage();
+                    android.util.Log.w("WeaveUpdates", "GitHub update check failed", e);
+                    control.release = null; // Do not reuse stale release metadata after an error.
                     control.lastCheck = System.currentTimeMillis();
                     finishUpdateCheck(kind);
                 });
@@ -4282,7 +4388,12 @@ public final class MainActivity extends Activity {
         }
         if ("current".equals(control.state) && control.release != null &&
                 WeaveUpdates.compare(updateCurrentVersion(kind), control.release.version) >= 0) return;
+        if (kind == UPDATE_FIRMWARE && updateCurrentVersion(kind) == null &&
+                control.release != null) {
+            requestInstalledFirmwareVersion(); return;
+        }
         if (!"available".equals(control.state) || control.release == null) {
+            if (kind == UPDATE_FIRMWARE) requestInstalledFirmwareVersion();
             checkUpdate(kind); return;
         }
         if (WeaveUpdates.compare(updateCurrentVersion(kind), control.release.version) >= 0) {
@@ -5366,6 +5477,9 @@ public final class MainActivity extends Activity {
         }
         if (selectedPage == FILES && !filesSearchTerm.isEmpty() && filesGlobalSearch == null)
             handler.postDelayed(delayedFilesSearch, 200);
+        if (selectedPage == SETTINGS && previousPage != SETTINGS && flipperIsConnected() &&
+                updateCurrentVersion(UPDATE_FIRMWARE) == null)
+            requestInstalledFirmwareVersion();
         if (gestureRefreshActive && selectedPage != gestureRefreshPage) finishGestureRefresh();
         String[] names = {"Home", "Apps", "Terminal", "Files", "Settings"};
         pageTitle.setText(names[selectedPage]);
@@ -5875,10 +5989,20 @@ public final class MainActivity extends Activity {
             }
         }
         if (selectedPage == CONSOLE) renderTerminalPanel(false);
-        if (selectedPage == SETTINGS && !settingsInfoOpen &&
-                (settingsLastConnected != connected || !settingsLastTransport.equals(transport) ||
-                 !settingsLastFirmware.equals(
-                        prefs.getString(WeaveService.KEY_FIRMWARE, "")))) showSettingsMain();
+        if (selectedPage == SETTINGS && !settingsInfoOpen) {
+            if (settingsLastConnected != connected || !settingsLastTransport.equals(transport)) {
+                showSettingsMain();
+                if (connected && updateCurrentVersion(UPDATE_FIRMWARE) == null &&
+                        !firmwareVersionReadPending) requestInstalledFirmwareVersion();
+            } else {
+                String nowFirmware = prefs.getString(WeaveService.KEY_FIRMWARE, "");
+                if (!settingsLastFirmware.equals(nowFirmware)) {
+                    settingsLastFirmware = nowFirmware;
+                    drawUpdateControl(UPDATE_FIRMWARE);
+                }
+                drawUpdateControl(UPDATE_APP);
+            }
+        }
     }
     private String currentTransportLabel() {
         String transport = prefs == null ? "" : prefs.getString(WeaveService.KEY_TRANSPORT, "");

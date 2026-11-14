@@ -57,6 +57,8 @@ public final class WeaveService extends Service {
     static final String ACTION_USB = "io.github.nullmess.weave.USB";
     private static final String ACTION_USB_PERMISSION = "io.github.nullmess.weave.USB_PERMISSION_SERVICE";
     static final String ACTION_SCAN = "io.github.nullmess.weave.SCAN";
+    static final String ACTION_REFRESH_DEVICE_VERSION = "io.github.nullmess.weave.REFRESH_DEVICE_VERSION";
+    static final String EVENT_DEVICE_VERSION = "io.github.nullmess.weave.DEVICE_VERSION";
     static final String ACTION_CONNECT_BLE = "io.github.nullmess.weave.CONNECT_BLE";
     static final String ACTION_DISCONNECT = "io.github.nullmess.weave.DISCONNECT";
     static final String ACTION_REFRESH_APPS = "io.github.nullmess.weave.REFRESH_APPS";
@@ -2384,11 +2386,18 @@ public final class WeaveService extends Service {
                 if ("battery".equals(field)) prefs.edit().putString(KEY_BATTERY, value).apply();
                 else if ("firmware".equals(field)) {
                     prefs.edit().putString(KEY_FIRMWARE, value).apply();
+                    android.util.Log.d("WeaveUpdates", "Flipper RPC firmware version: " + value);
+                    sendBroadcast(new Intent(EVENT_DEVICE_VERSION).setPackage(getPackageName())
+                            .putExtra("version", value));
                     FirmwareJob job = firmwareJob;
                     if (job != null && "rebooting".equals(job.phase) && value != null &&
                             job.deviceKey.equals(ble.connectedDeviceKey()) &&
                             value.matches(".*(?<![0-9])v?" + java.util.regex.Pattern.quote(job.version) + "(?![0-9]).*"))
                         finishFirmwareJob(true, "Firmware version verified on Flipper");
+                }
+                else if ("firmware_error".equals(field)) {
+                    sendBroadcast(new Intent(EVENT_DEVICE_VERSION).setPackage(getPackageName())
+                            .putExtra("error", value == null ? "Device version unavailable" : value));
                 }
                 else if ("name".equals(field)) prefs.edit().putString(KEY_DEVICE_NAME, value).apply();
                 else if ("api_version".equals(field) && value != null && value.matches("[0-9]+\\.[0-9]+")) {
@@ -2520,11 +2529,24 @@ public final class WeaveService extends Service {
             lastUsbPermissionTime = 0;
             lastUsbAttempt = System.currentTimeMillis();
             attemptUsb();
+        } else if (ACTION_REFRESH_DEVICE_VERSION.equals(action)) {
+            // Settings' update check must NOT depend on scanning, BLE permissions,
+            // or whether the transport happens to be USB rather than Bluetooth.
+            if (bleConfirmed && ble != null && ble.isRpcReady()) {
+                prefs.edit().remove(KEY_FIRMWARE).apply();
+                ble.refreshDeviceInfo();
+            } else {
+                sendBroadcast(new Intent(EVENT_DEVICE_VERSION).setPackage(getPackageName())
+                        .putExtra("error", "Flipper RPC is not ready"));
+            }
         } else if (ACTION_SCAN.equals(action)) {
-            if (hasBlePermission()) {
+            if (ble.isConnected()) {
+                // Reading RPC device info also works over USB without BLE permissions.
+                if (!ble.isUsbActive() && hasBlePermission()) ble.refreshInformation();
+                ble.refreshDeviceInfo();
+            } else if (hasBlePermission()) {
                 lastBleScan = System.currentTimeMillis();
-                if (!ble.isConnected() && !ble.isConnecting()) ble.scan();
-                else if (ble.isConnected()) ble.refreshInformation();
+                if (!ble.isConnecting()) ble.scan();
             } else setStatus("Bluetooth permission required");
         } else if (ACTION_LAUNCH_APP.equals(action)) {
             if (remoteInputLocked()) {

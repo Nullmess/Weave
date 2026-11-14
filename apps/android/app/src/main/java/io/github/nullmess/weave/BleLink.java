@@ -140,13 +140,31 @@ final class BleLink implements AutoCloseable {
     private int deviceInfoId;
     private int apiMajor = -1, apiMinor = -1;
     private int deviceInfoRetries;
+    private boolean firmwareVersionSeen;
+    private boolean deviceInfoRefreshQueued;
     private final Runnable deviceInfoTimeout = this::onDeviceInfoTimeout;
+    private final Runnable deviceInfoRetry = this::requestDeviceInfo;
 
     private void onDeviceInfoTimeout() {
-        if (!rpcReady || apiMajor > 0 && apiMinor >= 0) return;
+        if (!rpcReady) return;
+        // The API version can arrive without firmware_version. Retry specifically
+        // for the installed version; do not leave Settings in "Reading" forever.
         deviceInfoId = 0;
-        if (deviceInfoRetries < 3) requestDeviceInfo();
-        // Device information is optional. App download can use published builds without this field.
+        finishDeviceInfoRequest();
+    }
+
+    private void finishDeviceInfoRequest() {
+        if (deviceInfoRefreshQueued) {
+            deviceInfoRefreshQueued = false;
+            deviceInfoRetries = 0;
+            firmwareVersionSeen = false;
+            requestDeviceInfo();
+        } else if (!firmwareVersionSeen && deviceInfoRetries < 3 && rpcReady) {
+            handler.removeCallbacks(deviceInfoRetry);
+            handler.postDelayed(deviceInfoRetry, 500);
+        } else if (!firmwareVersionSeen && rpcReady) {
+            callbacks.information("firmware_error", "Flipper RPC did not return firmware_version");
+        }
     }
     private String operationName;
     private int operationId;
@@ -607,13 +625,12 @@ final class BleLink implements AutoCloseable {
                 reading = false;
                 return;
             }
+            // GATT Firmware Revision describes the hardware target and GATT
+            // Software Revision describes the git build. Neither is the
+            // installed Weave release: use RPC firmware_version exclusively.
             if (BATTERY_LEVEL.equals(characteristic.getUuid()) && value.length > 0) {
                 int percent = value[0] & 0xff;
                 if (percent <= 100) callbacks.information("battery", String.valueOf(percent));
-            } else if (FIRMWARE_VERSION.equals(characteristic.getUuid())
-                    || SOFTWARE_VERSION.equals(characteristic.getUuid())) {
-                String revision = new String(value, StandardCharsets.UTF_8).replace("\u0000", "").trim();
-                if (!revision.isEmpty()) callbacks.information("firmware", revision);
             } else if (MANUFACTURER.equals(characteristic.getUuid())) {
                 String manufacturer = new String(value, StandardCharsets.UTF_8).trim();
                 if (!manufacturer.isEmpty()) callbacks.information("manufacturer", manufacturer);
@@ -997,6 +1014,22 @@ final class BleLink implements AutoCloseable {
         readContents.reset();
     }
 
+    /** Explicit Settings refresh retries RPC firmware-version discovery even
+     *  if the initial connection's device-info retries were exhausted. */
+    void refreshDeviceInfo() {
+        if (!rpcReady) return;
+        handler.removeCallbacks(deviceInfoRetry);
+        if (deviceInfoId != 0) {
+            // Do not drop a user-requested refresh because another device-info
+            // request was already active during the swipe.
+            deviceInfoRefreshQueued = true;
+            return;
+        }
+        deviceInfoRetries = 0;
+        firmwareVersionSeen = false;
+        requestDeviceInfo();
+    }
+
     void requestDeviceInfo() {
         if (!rpcReady || deviceInfoId != 0 || deviceInfoRetries >= 3) return;
         deviceInfoRetries++;
@@ -1313,21 +1346,19 @@ final class BleLink implements AutoCloseable {
                     try { apiMajor = Integer.parseInt(prop[1]); } catch (Exception ignored) { }
                 } else if ("firmware_api_minor".equals(prop[0])) {
                     try { apiMinor = Integer.parseInt(prop[1]); } catch (Exception ignored) { }
-                } else if ("firmware_version".equals(prop[0]) || "firmware_gitversion".equals(prop[0])) {
-                    if (prop[1].matches(".*[0-9]+\\.[0-9]+\\.[0-9]+.*"))
+                } else if ("firmware_version".equals(prop[0])) {
+                    if (prop[1] != null && prop[1].matches(".*[0-9]+\\.[0-9]+\\.[0-9]+.*")) {
+                        firmwareVersionSeen = true;
                         callbacks.information("firmware", prop[1]);
+                    }
                 }
-                if (apiMajor > 0 && apiMinor >= 0) {
+                if (apiMajor > 0 && apiMinor >= 0)
                     callbacks.information("api_version", apiMajor + "." + apiMinor);
-                    handler.removeCallbacks(deviceInfoTimeout);
-                }
             }
             if (!raw.hasNext) {
+                handler.removeCallbacks(deviceInfoTimeout);
                 deviceInfoId = 0;
-                if ((apiMajor <= 0 || apiMinor < 0) && deviceInfoRetries < 3) {
-                    handler.removeCallbacks(deviceInfoTimeout);
-                    handler.postDelayed(this::requestDeviceInfo, 600);
-                }
+                finishDeviceInfoRequest();
             }
             return;
         }
@@ -1466,7 +1497,9 @@ final class BleLink implements AutoCloseable {
         screenSessionActive = false;
         writeBusy = false; credits = 0; flowSubscribed = false;
         rpcReady = false; rpcSubscribing = false; rpcWrite = null; rpcFlow = null;
+        handler.removeCallbacks(deviceInfoRetry);
         deviceInfoId = 0; apiMajor = -1; apiMinor = -1; deviceInfoRetries = 0;
+        firmwareVersionSeen = false; deviceInfoRefreshQueued = false;
         rpcInput.reset();
         BluetoothGatt old = gatt;
         gatt = null;
