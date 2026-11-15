@@ -60,16 +60,35 @@ def previous_cache_link(path):
     if not is_link(path):
         return False
     relative = path.relative_to(ROOT)
-    tail = ("build", "deps", *relative.parts)
     resolved = path.resolve(strict=False)
-    return resolved.parts[-len(tail):] == tail
+    # Cache locations from previous Weave versions, and the current cache
+    # when the source tree is moved between machines (e.g. a GitHub runner).
+    # Match whole path components, never a substring of an arbitrary target.
+    for prefix in (
+        ("build", "deps"),
+        ("weave", "deps"),
+        ("cache", "deps"),
+        ("build", ".work", "deps"),
+    ):
+        tail = (*prefix, *relative.parts)
+        if resolved.parts[-len(tail):] == tail:
+            return True
+    return False
 
 
 def relocate_cache_link(path):
     if not is_link(path) or managed_link(path):
         return
     if not previous_cache_link(path):
-        raise RuntimeError(f"Lien non géré : {path}")
+        # A checkout may contain stale, absolute symlinks committed by
+        # accident. In the ephemeral GitHub Actions workspace, an already
+        # broken dependency link contains no data worth preserving. Never
+        # unlink an unknown *working* link or a local user's custom link.
+        if os.environ.get("GITHUB_ACTIONS") == "true" and not path.exists():
+            unlink(path)
+            print(f"Weave : lien de dépendance cassé retiré (CI) : {path.relative_to(ROOT)}", flush=True)
+            return
+        raise RuntimeError(f"Lien non géré : {path} -> {os.readlink(path) if path.is_symlink() else '?'}")
     previous = path.resolve(strict=False)
     cached = cache_path(path)
     if not ready(cached) and ready(previous):

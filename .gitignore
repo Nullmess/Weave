@@ -90,3 +90,16 @@ apps/desktop/node_modules/
 # Local VS Code workspace (the uFBT templates remain versioned)
 /.vscode/
 /*.code-workspace
+
+# Generated links to the external Weave dependency cache (not source files)
+/firmware/lib/mlib
+/firmware/lib/nanopb
+/firmware/assets/protobuf
+/firmware/lib/libusb_stm32
+/firmware/lib/FreeRTOS-Kernel
+/firmware/lib/microtar
+/firmware/lib/mbedtls
+/firmware/lib/heatshrink
+/firmware/lib/stm32wb_cmsis
+/firmware/lib/stm32wb_hal
+/firmware/lib/stm32wb_copro
