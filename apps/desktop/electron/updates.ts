@@ -4,7 +4,7 @@ import {promises as fs} from 'node:fs';
 
 const REPO='Nullmess/Weave';
 const RELEASE=`https://api.github.com/repos/${REPO}/releases/latest`;
-const HEADERS={'User-Agent':'Weave/1.0.0','Accept':'application/vnd.github+json'};
+const HEADERS={'User-Agent':'Weave/1.0.1','Accept':'application/vnd.github+json'};
 const MAX_DOWNLOAD=250_000_000;
 export type UpdateKind='app'|'firmware';
 export type ReleaseAsset={version:string;name:string;size:number};
@@ -37,7 +37,7 @@ async function publishedAsset(kind:UpdateKind){
   });
   if(!asset||!asset.browser_download_url||!validateAssetUrl(asset.browser_download_url)||
      !asset.browser_download_url.startsWith(`https://github.com/${REPO}/releases/download/`))
-    throw Error('No compatible published '+(kind==='firmware'?'firmware':platformName)+' asset');
+    throw Error('Release v'+version+' build is not published yet ('+(kind==='firmware'?'firmware':platformName)+')');
   const size=Number(asset.size);
   if(!Number.isSafeInteger(size)||size<=0||size>MAX_DOWNLOAD)throw Error('Invalid release asset size');
   return {version,name:String(asset.name),size,url:asset.browser_download_url};
@@ -48,7 +48,7 @@ export async function checkLatest(kind:UpdateKind):Promise<ReleaseAsset>{
 export async function downloadLatest(kind:UpdateKind,expectedVersion:string,win:BrowserWindow|null):Promise<string>{
   const asset=await publishedAsset(kind);
   if(asset.version!==expectedVersion)throw Error('Release changed; check updates again');
-  const response=await withTimeout(asset.url,{'User-Agent':'Weave/1.0.0'},22000);
+  const response=await withTimeout(asset.url,{'User-Agent':'Weave/1.0.1'},22000);
   if(!response.ok||!response.body||!validateAssetUrl(response.url))throw Error('Release download unavailable');
   if(Number(response.headers.get('content-length')||'0')>MAX_DOWNLOAD)throw Error('Release exceeds size limit');
   const name=path.basename(asset.name);
@@ -92,7 +92,7 @@ async function loadCachedImage(key:string):Promise<string>{
   const target=path.join(app.getPath('userData'),'images',key+'.png');
   let bytes:Buffer;
   try{bytes=await fs.readFile(target);}catch{
-    const url=imageUrls[key];const response=await withTimeout(url,{'User-Agent':'Weave/1.0.0'},14000);
+    const url=imageUrls[key];const response=await withTimeout(url,{'User-Agent':'Weave/1.0.1'},14000);
     if(!response.ok||new URL(response.url).hostname!==new URL(url).hostname)throw Error('Image unavailable');
     const data=Buffer.from(await response.arrayBuffer());
     if(data.length>3_000_000||data.length<100)throw Error('Invalid image');

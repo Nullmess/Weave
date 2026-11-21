@@ -6,6 +6,7 @@
 - Request queue, transport notifications and socket events.
 - Updated Android and desktop companions.
 - Scoped socket sessions and safe FAP teardown.
+- Reliable release checks and Android-assisted firmware updates.
 
 ## [1.0.0]
 

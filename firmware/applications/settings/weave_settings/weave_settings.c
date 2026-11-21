@@ -66,6 +66,7 @@ typedef enum {
     WeaveFirmwareStatusChecking,
     WeaveFirmwareStatusAvailable,
     WeaveFirmwareStatusCurrent,
+    WeaveFirmwareStatusInstalling,
     WeaveFirmwareStatusUnavailable,
 } WeaveFirmwareStatus;
 
@@ -88,6 +89,9 @@ typedef struct {
     uint8_t firmware_spinner;
     char firmware_check_token[48];
     char firmware_latest[20];
+    char firmware_install_nonce[25];
+    char firmware_error[40];
+    bool firmware_install_accepted;
     uint8_t sound_selected;
     uint8_t alerts_selected;
     bool alerts_editing;
@@ -829,10 +833,14 @@ static void weave_settings_dialog_result(DialogExResult result, void* context) {
 
 #define WEAVE_FW_CHECK_REQ EXT_PATH(".weave/fw-check.req")
 #define WEAVE_FW_CHECK_RESULT EXT_PATH(".weave/fw-check.result")
+#define WEAVE_FW_INSTALL_REQ EXT_PATH(".weave/fw-install.req")
+#define WEAVE_FW_INSTALL_RESULT EXT_PATH(".weave/fw-install.result")
 /* Both Android and desktop companions reply with TOKEN|ok|X.Y.Z or
  * TOKEN|error|... . The Flipper does not download or flash firmware itself. */
 #define WEAVE_FW_CHECK_TICK_MS 200U
 #define WEAVE_FW_CHECK_TIMEOUT_TICKS 300U /* 60 seconds including gateway/network delays */
+#define WEAVE_FW_INSTALL_TIMEOUT_TICKS 4500U /* 15 minutes for download + BLE transfer */
+#define WEAVE_FW_INSTALL_ACK_TIMEOUT_TICKS 450U /* 90 seconds to reach Android */
 
 static bool weave_settings_parse_version(
     const char* value, unsigned* major, unsigned* minor, unsigned* patch) {
@@ -871,17 +879,25 @@ static void weave_settings_firmware_draw(Canvas* canvas, void* context) {
             snprintf(version_line, sizeof(version_line), "Latest: v%.15s", app->firmware_latest);
             canvas_draw_str_aligned(canvas, 64, 42, AlignCenter, AlignBottom, version_line);
         }
-        canvas_draw_str_aligned(canvas, 64, 57, AlignCenter, AlignBottom, "Install via companion");
+        canvas_draw_str_aligned(canvas, 64, 57, AlignCenter, AlignBottom,
+                                app->firmware_install_nonce[0] ? "OK: Install via phone" :
+                                "Use Android companion");
+    } else if(app->firmware_status == WeaveFirmwareStatusInstalling) {
+        canvas_draw_str_aligned(canvas, 64, 21, AlignCenter, AlignBottom, "Update requested");
+        canvas_draw_str_aligned(canvas, 64, 36, AlignCenter, AlignBottom, "Android downloads");
+        canvas_draw_str_aligned(canvas, 64, 50, AlignCenter, AlignBottom, "then Flipper flashes");
+        canvas_draw_str_aligned(canvas, 64, 63, AlignCenter, AlignBottom, "Keep connected");
     } else if(app->firmware_status == WeaveFirmwareStatusCurrent) {
         char version_line[28];
         snprintf(version_line, sizeof(version_line), "Weave v%s", WEAVE_RELEASE);
         canvas_draw_str_aligned(canvas, 64, 33, AlignCenter, AlignBottom, "Already up to date");
         canvas_draw_str_aligned(canvas, 64, 49, AlignCenter, AlignBottom, version_line);
     } else {
-        /* Same result for no gateway, no Internet, no release, or SD errors. */
-        canvas_draw_str_aligned(canvas, 64, 26, AlignCenter, AlignBottom, "Check unavailable");
-        canvas_draw_str_aligned(canvas, 64, 42, AlignCenter, AlignBottom, "Gateway / Internet /");
-        canvas_draw_str_aligned(canvas, 64, 56, AlignCenter, AlignBottom, "Release unavailable");
+        canvas_draw_str_aligned(canvas, 64, 26, AlignCenter, AlignBottom, "Update unavailable");
+        canvas_draw_str_aligned(canvas, 64, 44, AlignCenter, AlignBottom,
+                                app->firmware_error[0] ? app->firmware_error :
+                                "Check companion");
+        canvas_draw_str_aligned(canvas, 64, 60, AlignCenter, AlignBottom, "OK: retry");
     }
 }
 
@@ -901,10 +917,28 @@ static void weave_settings_firmware_poll(WeaveSettings* app) {
        result[token_length] != '|') return;
     const char* payload = result + token_length + 1;
     if(strncmp(payload, "ok|", 3) != 0) {
+        strlcpy(app->firmware_error,
+                strstr(payload, "build pending") ? "Release build pending" :
+                strstr(payload, "rate limit") ? "GitHub rate limited" :
+                "Check phone / Internet", sizeof(app->firmware_error));
         app->firmware_status = WeaveFirmwareStatusUnavailable;
         return;
     }
-    const char* version = payload + 3;
+    char version[20];
+    const char* raw_version = payload + 3;
+    const char* separator = strchr(raw_version, '|');
+    size_t version_len = separator ? (size_t)(separator - raw_version) : strlen(raw_version);
+    if(!version_len || version_len >= sizeof(version)) {
+        app->firmware_status = WeaveFirmwareStatusUnavailable;
+        return;
+    }
+    memcpy(version, raw_version, version_len);
+    version[version_len] = '\0';
+    app->firmware_install_nonce[0] = '\0';
+    if(separator && strlen(separator + 1) == 24 &&
+       strspn(separator + 1, "0123456789abcdef") == 24)
+        strlcpy(app->firmware_install_nonce, separator + 1,
+                sizeof(app->firmware_install_nonce));
     unsigned a, b, c, x, y, z;
     if(!weave_settings_parse_version(version, &a, &b, &c) ||
        !weave_settings_parse_version(WEAVE_RELEASE, &x, &y, &z)) {
@@ -916,25 +950,103 @@ static void weave_settings_firmware_poll(WeaveSettings* app) {
     app->firmware_status = newer ? WeaveFirmwareStatusAvailable : WeaveFirmwareStatusCurrent;
 }
 
+/* Only a verified check result can authorize an installation request. The
+ * companion matches both the token and version before downloading the bundle. */
+static bool weave_settings_firmware_request_install(WeaveSettings* app) {
+    if(!app->firmware_check_token[0] || !app->firmware_latest[0] ||
+       !app->firmware_install_nonce[0] ||
+       storage_sd_status(app->storage) != FSE_OK) return false;
+    char payload[112];
+    int length = snprintf(payload, sizeof(payload), "%s|%s|%s",
+                          app->firmware_check_token, app->firmware_latest,
+                          app->firmware_install_nonce);
+    if(length <= 0 || (size_t)length >= sizeof(payload)) return false;
+    File* file = storage_file_alloc(app->storage);
+    bool success = storage_file_open(file, WEAVE_FW_INSTALL_REQ, FSAM_WRITE, FSOM_CREATE_ALWAYS);
+    if(success) success = storage_file_write(file, payload, (size_t)length) == (size_t)length;
+    if(storage_file_is_open(file)) storage_file_close(file);
+    storage_file_free(file);
+    if(success) {
+        app->firmware_status = WeaveFirmwareStatusInstalling;
+        app->firmware_install_accepted = false;
+        app->firmware_elapsed_ticks = 0;
+        view_commit_model(app->firmware_update_view, true);
+    }
+    return success;
+}
+
+static void weave_settings_firmware_poll_install(WeaveSettings* app) {
+    char result[112] = {0};
+    File* file = storage_file_alloc(app->storage);
+    if(storage_file_open(file, WEAVE_FW_INSTALL_RESULT, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        size_t count = storage_file_read(file, result, sizeof(result) - 1);
+        result[count] = '\0';
+        storage_file_close(file);
+    }
+    storage_file_free(file);
+    size_t token_length = strlen(app->firmware_check_token);
+    if(!token_length || strncmp(result, app->firmware_check_token, token_length) != 0 ||
+       result[token_length] != '|') return;
+    if(strcmp(result + token_length + 1, "accepted") == 0) {
+        app->firmware_install_accepted = true;
+        return;
+    }
+    if(strcmp(result + token_length + 1, "done") == 0) {
+        app->firmware_status = WeaveFirmwareStatusCurrent;
+        return;
+    }
+    if(strncmp(result + token_length + 1, "error|", 6) == 0) {
+        const char* detail = result + token_length + 7;
+        strlcpy(app->firmware_error,
+                !strcmp(detail, "busy") ? "Phone / Flipper busy" :
+                !strcmp(detail, "disconnected") ? "Phone disconnected" :
+                "Phone download failed", sizeof(app->firmware_error));
+        app->firmware_status = WeaveFirmwareStatusUnavailable;
+    }
+}
+
 static void weave_settings_firmware_tick(void* context) {
     WeaveSettings* app = context;
     if(app->active_view != WeaveSettingsViewFirmwareUpdate ||
-       app->firmware_status != WeaveFirmwareStatusChecking) return;
+       (app->firmware_status != WeaveFirmwareStatusChecking &&
+        app->firmware_status != WeaveFirmwareStatusInstalling)) return;
     app->firmware_spinner = (uint8_t)((app->firmware_spinner + 1) % 8);
     app->firmware_elapsed_ticks++;
-    if(app->firmware_elapsed_ticks >= WEAVE_FW_CHECK_TIMEOUT_TICKS) {
-        app->firmware_status = WeaveFirmwareStatusUnavailable;
-    } else if(app->firmware_elapsed_ticks % 3 == 0) {
-        weave_settings_firmware_poll(app);
+    if(app->firmware_status == WeaveFirmwareStatusChecking) {
+        if(app->firmware_elapsed_ticks >= WEAVE_FW_CHECK_TIMEOUT_TICKS) {
+            strlcpy(app->firmware_error, "No companion reply", sizeof(app->firmware_error));
+            app->firmware_status = WeaveFirmwareStatusUnavailable;
+        }
+        else if(app->firmware_elapsed_ticks % 3 == 0)
+            weave_settings_firmware_poll(app);
+    } else {
+        if(app->firmware_elapsed_ticks >= WEAVE_FW_INSTALL_TIMEOUT_TICKS ||
+           (!app->firmware_install_accepted &&
+            app->firmware_elapsed_ticks >= WEAVE_FW_INSTALL_ACK_TIMEOUT_TICKS)) {
+            strlcpy(app->firmware_error,
+                    app->firmware_install_accepted ? "Phone update timed out" :
+                    "No Android response", sizeof(app->firmware_error));
+            app->firmware_status = WeaveFirmwareStatusUnavailable;
+        }
+        else if(app->firmware_elapsed_ticks % 10 == 0)
+            weave_settings_firmware_poll_install(app);
     }
     view_commit_model(app->firmware_update_view, true);
 }
 
 static bool weave_settings_firmware_input(InputEvent* event, void* context) {
     WeaveSettings* app = context;
-    if(event->type == InputTypeShort && event->key == InputKeyOk &&
-       app->firmware_status != WeaveFirmwareStatusChecking) {
-        /* OK on a result retries the check; BACK returns to Settings. */
+    if(event->type == InputTypeShort && event->key == InputKeyOk) {
+        if(app->firmware_status == WeaveFirmwareStatusAvailable) {
+            if(!app->firmware_install_nonce[0]) return true; /* Android required */
+            if(!weave_settings_firmware_request_install(app)) {
+                strlcpy(app->firmware_error, "Cannot send request", sizeof(app->firmware_error));
+                app->firmware_status = WeaveFirmwareStatusUnavailable;
+            }
+            return true;
+        }
+        if(app->firmware_status == WeaveFirmwareStatusChecking ||
+           app->firmware_status == WeaveFirmwareStatusInstalling) return true;
         weave_settings_check_firmware(app);
         return true;
     }
@@ -948,11 +1060,15 @@ static void weave_settings_check_firmware(WeaveSettings* app) {
     app->firmware_elapsed_ticks = 0;
     app->firmware_spinner = 0;
     app->firmware_latest[0] = '\0';
+    app->firmware_install_accepted = false;
+    app->firmware_error[0] = '\0';
+    app->firmware_install_nonce[0] = '\0';
     app->firmware_check_token[0] = '\0';
     app->active_view = WeaveSettingsViewFirmwareUpdate;
     view_dispatcher_switch_to_view(app->dispatcher, WeaveSettingsViewFirmwareUpdate);
 
     if(storage_sd_status(app->storage) != FSE_OK) {
+        strlcpy(app->firmware_error, "microSD unavailable", sizeof(app->firmware_error));
         app->firmware_status = WeaveFirmwareStatusUnavailable;
     } else {
         storage_simply_mkdir(app->storage, EXT_PATH(".weave"));
@@ -966,7 +1082,10 @@ static void weave_settings_check_firmware(WeaveSettings* app) {
         }
         if(storage_file_is_open(file)) storage_file_close(file);
         storage_file_free(file);
-        if(!written) app->firmware_status = WeaveFirmwareStatusUnavailable;
+        if(!written) {
+            strlcpy(app->firmware_error, "SD write failed", sizeof(app->firmware_error));
+            app->firmware_status = WeaveFirmwareStatusUnavailable;
+        }
     }
     view_commit_model(app->firmware_update_view, true);
 }

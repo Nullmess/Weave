@@ -130,6 +130,8 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_FILE_EXPORT = 78;
     private static final int REQUEST_FAP_IMPORT = 79;
     private static final int REQUEST_FILE_EXPORT_ARCHIVE = 80;
+    private static final int REQUEST_UPDATE_APK_SAVE = 81;
+    private File pendingUpdateApk;
     private FrameLayout terminalPanel;
     private TextView terminalCliTab, terminalLogsTab;
     private int terminalMode = 0; // 0 = Flipper CLI (BLE or USB), 1 = LOGS
@@ -928,7 +930,7 @@ public final class MainActivity extends Activity {
     // Update buttons are the sole status indicator; the orange surface doubles as progress.
     private static final int UPDATE_APP = 0, UPDATE_FIRMWARE = 1;
     private static final class UpdateControl {
-        String state = "unknown", error = "";
+        String state = "unknown", error = "", pendingVersion = "";
         long lastCheck;
         int percent;
         boolean busy;
@@ -3738,6 +3740,33 @@ public final class MainActivity extends Activity {
             }
             return;
         }
+        if (requestCode == REQUEST_UPDATE_APK_SAVE) {
+            File apk = pendingUpdateApk;
+            pendingUpdateApk = null;
+            if (resultCode != RESULT_OK || data == null || data.getData() == null ||
+                    apk == null || !apk.isFile()) return;
+            final Uri destination = data.getData();
+            new Thread(() -> {
+                try (InputStream source = new java.io.FileInputStream(apk);
+                     OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                    if (output == null) throw new IOException("Cannot save selected APK");
+                    byte[] buffer = new byte[32768];
+                    int count;
+                    while ((count = source.read(buffer)) != -1) output.write(buffer, 0, count);
+                    output.flush();
+                    handler.post(() -> new AlertDialog.Builder(this)
+                            .setTitle("APK saved")
+                            .setMessage("The new Weave APK has been saved in the selected folder. " +
+                                    "If Android rejects the update because of a different signing key, " +
+                                    "back up your Weave settings, uninstall the old app, " +
+                                    "then open this APK in Files to install it. Uninstalling erases app data.")
+                            .setPositiveButton("OK", null).show());
+                } catch (Exception failure) {
+                    handler.post(() -> toast("APK save failed: " + failure.getMessage()));
+                }
+            }, "Weave-apk-export").start();
+            return;
+        }
         if (requestCode == REQUEST_FILE_EXPORT) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null && exportedFile != null) {
                 try (OutputStream output = getContentResolver().openOutputStream(data.getData())) {
@@ -4274,8 +4303,14 @@ public final class MainActivity extends Activity {
             label += " → v" + control.release.version;
         if (control.busy && firmware && "installing".equals(control.state))
             label = "Installing on Flipper";
+        else if (!control.busy && "pending".equals(status))
+            label = "v" + control.pendingVersion + " build pending";
         else if (!control.busy && control.error != null && !control.error.isEmpty())
-            label = firmware && !connected ? "Connect Flipper" : "Check failed · tap to retry";
+            label = firmware && !connected ? "Connect Flipper" :
+                    (control.error.contains("not published yet") ? "Release build pending" :
+                     control.error.contains("rate limit") ? "GitHub limit · retry later" :
+                     !hasInternetAccess() ? "Offline · check connection" :
+                            "Check failed · tap to retry");
         if (control.versionView != null) control.versionView.setText(label);
         // The busy state shows progress, not an outdated check/update icon.
         boolean verifiedCurrent = !control.busy && "current".equals(status);
@@ -4285,6 +4320,7 @@ public final class MainActivity extends Activity {
                 "installing".equals(control.state) ? "" + control.percent + "%" :
                 "↓ " + control.percent + "%") :
                 verifiedCurrent || available ? "" : unknownOffline ? "?" :
+                "pending".equals(status) ? "Pending" :
                 firmware && connected && "waiting_version".equals(control.state)
                         ? "Reading…" : "Retry";
         if (control.statusIcon != null) {
@@ -4298,6 +4334,7 @@ public final class MainActivity extends Activity {
             control.buttonText.setText(symbol);
             control.buttonText.setContentDescription(control.busy ? "Checking or installing update" :
                     available ? "Install newer version" : verifiedCurrent ? "Up to date" :
+                    "pending".equals(status) ? "Release assets are still being built; tap to recheck" :
                     firmware && !connected ? "Connect a Flipper to check firmware" : "Retry update check");
         }
         if (control.progressTrack != null) {
@@ -4352,6 +4389,7 @@ public final class MainActivity extends Activity {
                 handler.post(() -> {
                     if (epoch != control.releaseCheckEpoch) return; // Superseded by a manual refresh.
                     control.release = release;
+                    control.pendingVersion = "";
                     // Never compare against a stale device version captured
                     // before the network request, nor claim current on null.
                     String installed = updateCurrentVersion(kind);
@@ -4367,10 +4405,21 @@ public final class MainActivity extends Activity {
                     control.lastCheck = System.currentTimeMillis();
                     finishUpdateCheck(kind);
                 });
+            } catch (WeaveUpdates.AssetPendingException pending) {
+                handler.post(() -> {
+                    if (epoch != control.releaseCheckEpoch) return;
+                    control.state = "pending";
+                    control.pendingVersion = pending.version;
+                    control.error = pending.getMessage();
+                    control.release = null;
+                    control.lastCheck = System.currentTimeMillis();
+                    finishUpdateCheck(kind);
+                });
             } catch (Exception e) {
                 handler.post(() -> {
                     if (epoch != control.releaseCheckEpoch) return;
                     control.state = "unknown"; control.error = e.getMessage();
+                    control.pendingVersion = "";
                     android.util.Log.w("WeaveUpdates", "GitHub update check failed", e);
                     control.release = null; // Do not reuse stale release metadata after an error.
                     control.lastCheck = System.currentTimeMillis();
@@ -4386,6 +4435,11 @@ public final class MainActivity extends Activity {
         if (kind == UPDATE_FIRMWARE && !flipperIsConnected()) {
             control.state = "unknown"; toast("Flipper disconnected"); drawUpdateControl(kind); return;
         }
+        if (kind == UPDATE_FIRMWARE &&
+                !"Bluetooth".equalsIgnoreCase(prefs.getString(WeaveService.KEY_TRANSPORT, ""))) {
+            toast("Firmware installation currently requires a Bluetooth Flipper connection");
+            return;
+        }
         if ("current".equals(control.state) && control.release != null &&
                 WeaveUpdates.compare(updateCurrentVersion(kind), control.release.version) >= 0) return;
         if (kind == UPDATE_FIRMWARE && updateCurrentVersion(kind) == null &&
@@ -4400,6 +4454,13 @@ public final class MainActivity extends Activity {
             checkUpdate(kind); return;
         }
         control.busy = true; control.percent = 0; drawUpdateControl(kind);
+        if (kind == UPDATE_FIRMWARE) {
+            // Keep downloading and flashing alive while Settings is backgrounded.
+            startService(new Intent(this, WeaveService.class)
+                    .setAction(WeaveService.ACTION_DOWNLOAD_FIRMWARE)
+                    .putExtra("version", control.release.version));
+            return;
+        }
         new Thread(() -> {
             try {
                 File file = WeaveUpdates.download(this, control.release, kind == UPDATE_FIRMWARE,
@@ -4422,43 +4483,22 @@ public final class MainActivity extends Activity {
     }
 
     private void presentDownloadedUpdate(int kind, File file) {
-        if (kind == UPDATE_FIRMWARE) {
-            if (!flipperIsConnected()) {
-                toast("Connect your Flipper to install firmware");
-                return;
-            }
-            new AlertDialog.Builder(this)
-                    .setTitle("Update Flipper firmware")
-                    .setMessage("Install the downloaded Weave firmware directly on your Flipper? " +
-                            "Keep your Flipper charged and connected until it restarts.")
-                    .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Install", (dialog, which) -> {
-                        UpdateControl control = updateControls[UPDATE_FIRMWARE];
-                        if (control.release == null ||
-                                WeaveUpdates.compare(updateCurrentVersion(UPDATE_FIRMWARE),
-                                        control.release.version) >= 0) return;
-                        control.busy = true;
-                        control.state = "installing";
-                        control.percent = 0;
-                        drawUpdateControl(UPDATE_FIRMWARE);
-                        startService(new Intent(this, WeaveService.class)
-                                .setAction(WeaveService.ACTION_INSTALL_FIRMWARE)
-                                .putExtra("version", control.release.version));
-                    }).show();
-            return;
-        }
-        Uri source = new Uri.Builder().scheme("content")
-                .authority(getPackageName() + ".updates").appendPath(file.getName()).build();
-        Intent intent;
-        if (kind == UPDATE_APP) {
-            intent = new Intent(Intent.ACTION_VIEW);
-            intent.setDataAndType(source, "application/vnd.android.package-archive");
-        } else return;
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (kind != UPDATE_APP || file == null || !file.isFile()) return;
+        // A debug-signed release might not install over an older APK.
+        // Let Android's document picker select Downloads or another folder;
+        // the downloaded installer survives removal of this application.
+        pendingUpdateApk = file;
+        Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        save.setType("application/vnd.android.package-archive");
+        save.addCategory(Intent.CATEGORY_OPENABLE);
+        save.putExtra(Intent.EXTRA_TITLE,
+                updateControls[UPDATE_APP].release == null ? "Weave-android.apk" :
+                        updateControls[UPDATE_APP].release.name);
         try {
-            startActivity(intent);
-        } catch (Exception ignored) {
-            toast("Update downloaded; open a compatible installer to apply it");
+            startActivityForResult(save, REQUEST_UPDATE_APK_SAVE);
+        } catch (ActivityNotFoundException e) {
+            pendingUpdateApk = null;
+            toast("No document picker available to save the APK");
         }
     }
 

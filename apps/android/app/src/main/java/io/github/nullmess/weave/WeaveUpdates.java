@@ -9,6 +9,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
+import java.security.MessageDigest;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -19,11 +21,20 @@ final class WeaveUpdates {
     private static final String REPO = "Nullmess/Weave";
     private static final int MAX_JSON = 1_000_000;
     private static final long MAX_ASSET = 250_000_000L;
+    private static JSONObject cachedRelease;
+    private static long cachedAt;
+    static final class AssetPendingException extends IOException {
+        final String version;
+        AssetPendingException(String version, boolean firmware) {
+            super("v" + version + " " + (firmware ? "firmware" : "Android") + " build is not published yet");
+            this.version = version;
+        }
+    }
 
     static final class Release {
-        final String version, name, url;
-        Release(String version, String name, String url) {
-            this.version = version; this.name = name; this.url = url;
+        final String version, name, url, digest;
+        Release(String version, String name, String url, String digest) {
+            this.version = version; this.name = name; this.url = url; this.digest = digest;
         }
     }
     interface Progress { void onProgress(int percent); }
@@ -42,7 +53,7 @@ final class WeaveUpdates {
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(12000);
             connection.setReadTimeout(20000);
-            connection.setRequestProperty("User-Agent", "Weave/1.0.0");
+            connection.setRequestProperty("User-Agent", "Weave/1.0.1");
             connection.setRequestProperty("Accept", "application/vnd.github+json, */*");
             int status = connection.getResponseCode();
             if (status >= 300 && status < 400) {
@@ -53,8 +64,11 @@ final class WeaveUpdates {
                 continue;
             }
             if (status != 200) {
+                String remaining = connection.getHeaderField("X-RateLimit-Remaining");
                 connection.disconnect();
-                throw new java.io.IOException(status == 404 ? "No public GitHub release found" : "Download HTTP " + status);
+                throw new IOException(status == 404 ? "No public GitHub release found" :
+                        status == 429 || (status == 403 && "0".equals(remaining)) ?
+                                "GitHub rate limit; retry later" : "GitHub HTTP " + status);
             }
             return connection;
         }
@@ -86,14 +100,24 @@ final class WeaveUpdates {
         }
         return 0;
     }
-    static Release latest(boolean firmware) throws Exception {
+    // Both Settings tiles and Flipper's FW check share one short-lived metadata read.
+    // Avoid two simultaneous anonymous GitHub API requests on every refresh.
+    private static synchronized JSONObject latestMetadata() throws Exception {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (cachedRelease != null && now - cachedAt < 20_000L) return cachedRelease;
         HttpURLConnection conn = connect("https://api.github.com/repos/" + REPO + "/releases/latest");
-        JSONObject release = new JSONObject(new String(read(conn, MAX_JSON, null), StandardCharsets.UTF_8));
+        JSONObject metadata = new JSONObject(new String(read(conn, MAX_JSON, null), StandardCharsets.UTF_8));
+        cachedRelease = metadata;
+        cachedAt = android.os.SystemClock.elapsedRealtime();
+        return metadata;
+    }
+    static Release latest(boolean firmware) throws Exception {
+        JSONObject release = latestMetadata();
         String version = release.optString("tag_name", "").replaceFirst("^[vV]", "");
-        if (!version.matches("\\d+\\.\\d+\\.\\d+")) throw new java.io.IOException("Release version unavailable");
+        if (!version.matches("\\d+\\.\\d+\\.\\d+")) throw new IOException("Release version unavailable");
         JSONArray assets = release.optJSONArray("assets");
-        if (assets == null) throw new java.io.IOException("No published download");
-        for (int i=0;i<assets.length();i++) {
+        if (assets == null) throw new AssetPendingException(version, firmware);
+        for (int i = 0; i < assets.length(); i++) {
             JSONObject asset = assets.optJSONObject(i);
             if (asset == null) continue;
             String name = asset.optString("name", "");
@@ -102,10 +126,15 @@ final class WeaveUpdates {
             String url = asset.optString("browser_download_url", "");
             String expectedUrl = "https://github.com/" + REPO + "/releases/download/"
                     + release.optString("tag_name", "") + "/" + expected;
-            if (!expectedUrl.equals(url)) continue;
-            return new Release(version, name, url);
+            if (!expectedUrl.equals(url)) throw new IOException("Unexpected GitHub asset URL");
+            long size = asset.optLong("size", 0);
+            if (size <= 128 || size > MAX_ASSET) throw new IOException("Invalid published asset size");
+            String digest = asset.optString("digest", "");
+            if (!digest.isEmpty() && !digest.matches("sha256:[0-9a-fA-F]{64}"))
+                throw new IOException("Unsupported release checksum");
+            return new Release(version, name, url, digest);
         }
-        throw new java.io.IOException("No compatible published " + (firmware ? "firmware" : "Android") + " asset");
+        throw new AssetPendingException(version, firmware);
     }
     static File download(Context context, Release release, boolean firmware, Progress progress) throws Exception {
         if (release == null) throw new java.io.IOException("No verified release");
@@ -118,6 +147,7 @@ final class WeaveUpdates {
             long declared = conn.getContentLengthLong();
             if (declared > MAX_ASSET) throw new java.io.IOException("Update exceeds size limit");
             long count = 0;
+            MessageDigest checksum = MessageDigest.getInstance("SHA-256");
             try (InputStream source = conn.getInputStream(); FileOutputStream target = new FileOutputStream(temp)) {
                 byte[] buffer = new byte[32768]; int read;
                 while ((read = source.read(buffer)) != -1) {
@@ -125,12 +155,19 @@ final class WeaveUpdates {
                     count += read;
                     if (count > MAX_ASSET) throw new java.io.IOException("Update exceeds size limit");
                     target.write(buffer, 0, read);
+                    checksum.update(buffer, 0, read);
                     if (progress != null && declared > 0)
                         progress.onProgress((int)Math.min(99, count * 100 / declared));
                 }
                 target.getFD().sync();
             }
-            if (count < 128) throw new java.io.IOException("Empty update file");
+            if (count < 128) throw new IOException("Empty update file");
+            if (!release.digest.isEmpty()) {
+                StringBuilder hex = new StringBuilder(64);
+                for (byte b : checksum.digest()) hex.append(String.format(Locale.ROOT, "%02x", b & 0xff));
+                if (!release.digest.substring(7).equalsIgnoreCase(hex.toString()))
+                    throw new IOException("Release SHA-256 mismatch");
+            }
             try (java.io.FileInputStream stream = new java.io.FileInputStream(temp)) {
                 int first = stream.read(), second = stream.read();
                 boolean valid = firmware ? first == 0x1f && second == 0x8b : first == 'P' && second == 'K';

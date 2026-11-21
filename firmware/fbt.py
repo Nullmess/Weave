@@ -560,7 +560,7 @@ def repair(args):
     print(f"  qFlipper CLI: {tool or 'not found'}")
     package = find_firmware_package()
     print(f"  Local Weave update: {package if package else 'not built'}")
-    print("  Recovery installs official firmware first, NOT Weave 1.0.0.")
+    print("  Recovery installs official firmware first, NOT Weave 1.0.1.")
     print("  WARNING: recovery may ERASE Flipper internal storage, including")
     print("  settings, Dolphin progress and Bluetooth pairings. microSD is preserved.")
 
@@ -635,7 +635,7 @@ def repair(args):
         return result.returncode
     print("Weave repair: qFlipper CLI exited successfully; verify that the")
     print("Flipper boots normally before attempting any further flash.")
-    print("To restore Weave 1.0.0 after successful recovery:")
+    print("To restore Weave 1.0.1 after successful recovery:")
     print("  python3 fbt.py flash")
     print("Note: a crash caused by Weave source code may recur after reinstalling it.")
     return 0
