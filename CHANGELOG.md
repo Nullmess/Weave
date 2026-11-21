@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.1] (development)
+## [1.0.1]
 
 - Networking API v3: HTTPS headers and file uploads.
 - Request queue, transport notifications and socket events.
