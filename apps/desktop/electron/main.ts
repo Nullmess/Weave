@@ -78,6 +78,7 @@ ipcMain.handle('weave:usb:send',async(_,data:unknown)=> {
 ipcMain.handle('weave:usb:close',async()=>{ if(port?.isOpen) await new Promise<void>(r=>port!.close(()=>r())); port=null; });
 const networkEngine=new NetworkEngine();
 ipcMain.handle('weave:network:reset',()=>{networkEngine.reset();});
+ipcMain.handle('weave:network:event',()=>networkEngine.nextEvent());
 ipcMain.handle('weave:network',async(_,raw:unknown,approved:unknown)=>{
     if(!raw||typeof raw!=='object')return {status:3,code:0,data:new Uint8Array()};
     const req=raw as NetworkOperation;

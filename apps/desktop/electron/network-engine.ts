@@ -15,7 +15,7 @@ const respond=(status=0,code=0,data:Uint8Array=new Uint8Array()):NetworkResult=>
 const ASCII_HOST=/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i;
 const validHost=(host:string)=>ASCII_HOST.test(host)&&!host.includes('..');
 type Session={kind:'TCP'|'UDP'|'WS';socket:net.Socket|dgram.Socket|WebSocket;queue:Buffer[];
-    queued:number;dead:boolean;last:number};
+    queued:number;dead:boolean;last:number;watch:boolean};
 export class NetworkEngine {
     private sessions=new Map<number,Session>();
     private serial=0;
@@ -57,17 +57,27 @@ export class NetworkEngine {
         if(s.queued+chunk.length>QUEUE_LIMIT){s.dead=true;return;}
         if(chunk.length){s.queue.push(chunk);s.queued+=chunk.length;}
     }
-    private dequeue(s:Session):Uint8Array{
+    private dequeue(s:Session,limit=65536):Uint8Array{
         s.last=Date.now();
         if(s.dead){throw Error('Closed or overflowed session');}
         let used=0;const chunks:Buffer[]=[];
-        while(s.queue.length&&used<65536){
-            const buffer=s.queue[0];const take=Math.min(buffer.length,65536-used);
+        while(s.queue.length&&used<limit){
+            const buffer=s.queue[0];const take=Math.min(buffer.length,limit-used);
             chunks.push(buffer.subarray(0,take));
             used+=take;s.queued-=take;
             if(take===buffer.length)s.queue.shift();else s.queue[0]=buffer.subarray(take);
         }
         return Buffer.concat(chunks,used);
+    }
+    /* Best-effort unsolicited socket events. The renderer publishes one event
+     * at a time through the Storage RPC mailbox and waits for its ack marker
+     * to disappear before draining another buffered message. */
+    nextEvent():{kind:'TCP'|'UDP'|'WS';session:number;data:Uint8Array}|null{
+        for(const [session,s] of this.sessions){
+            if(s.watch&&!s.dead&&s.queued>0)
+                return {kind:s.kind,session,data:this.dequeue(s,4096)};
+        }
+        return null;
     }
     private getSession(target:string,kind:string):{id:number;s:Session}{
         if(!/^[1-9][0-9]{0,4}$/.test(target))throw Error('Bad session ID');
@@ -77,7 +87,7 @@ export class NetworkEngine {
     }
     private async openSocket(kind:'TCP'|'UDP'|'WS',target:string):Promise<NetworkResult>{
         const id=this.slot();
-        const session:Session={kind,socket:null as any,queue:[],queued:0,dead:false,last:Date.now()};
+        const session:Session={kind,socket:null as any,queue:[],queued:0,dead:false,last:Date.now(),watch:false};
         if(kind==='TCP'){
             const {host,port}=this.endpoint(target);
             const socket=net.createConnection({host,port});session.socket=socket;
@@ -121,11 +131,15 @@ export class NetworkEngine {
     }
     private async socketOperation(verb:string,target:string,data:Uint8Array):Promise<NetworkResult>{
         const [kind,action]=verb.split('_');
-        if(!['TCP','UDP','WS'].includes(kind)||!['OPEN','SEND','RECV','CLOSE'].includes(action))
+        if(!['TCP','UDP','WS'].includes(kind)||!['OPEN','SEND','RECV','CLOSE','WATCH'].includes(action))
             return respond(3);
         if(action==='OPEN')return this.openSocket(kind as 'TCP'|'UDP'|'WS',target);
         const {id,s}=this.getSession(target,kind);
         if(action==='CLOSE'){this.close(id);return respond();}
+        if(action==='WATCH'){
+            if(data.length!==1||data[0]>1)return respond(3);
+            s.watch=!!data[0];return respond();
+        }
         if(action==='RECV')return respond(0,0,this.dequeue(s));
         if(data.length>NET_MAX_BYTES) return respond(4);
         if(kind==='TCP') await new Promise<void>((resolve,reject)=>
@@ -138,7 +152,38 @@ export class NetworkEngine {
         }
         return respond();
     }
-    private async http(method:string,target:string,body:Uint8Array):Promise<NetworkResult>{
+    /* HTTPX: HX1, method length, method, header count, repeated
+     * (name length, value length LE16, name, value), entity bytes. */
+    private decodeHttpX(payload:Uint8Array):{method:string;headers:Record<string,string>;body:Uint8Array}{
+        const decoder=new TextDecoder('ascii',{fatal:true});
+        if(payload.length<6||String.fromCharCode(...payload.subarray(0,3))!=='HX1')
+            throw Error('Invalid HTTPX envelope');
+        let at=3;
+        const methodLength=payload[at++];
+        if(methodLength<3||methodLength>7||at+methodLength+1>payload.length)throw Error('Invalid HTTPX method');
+        const method=decoder.decode(payload.subarray(at,at+methodLength));at+=methodLength;
+        if(!['GET','POST','PUT','PATCH','DELETE','HEAD'].includes(method))throw Error('Invalid HTTPX method');
+        const count=payload[at++];
+        if(count>8)throw Error('Too many HTTPX headers');
+        const headers:Record<string,string>={};
+        const forbidden=new Set(['host','content-length','connection','transfer-encoding','upgrade','keep-alive','te','trailer','proxy-authorization','proxy-connection']);
+        for(let i=0;i<count;i++){
+            if(at+3>payload.length)throw Error('Invalid HTTPX header');
+            const nameLen=payload[at++],valueLen=payload[at++]|(payload[at++]<<8);
+            if(!nameLen||nameLen>64||valueLen>256||at+nameLen+valueLen>payload.length)
+                throw Error('Invalid HTTPX header');
+            const name=decoder.decode(payload.subarray(at,at+nameLen));at+=nameLen;
+            const value=decoder.decode(payload.subarray(at,at+valueLen));at+=valueLen;
+            if(!/^[a-z0-9-]+$/i.test(name)||!/^[ -~]*$/.test(value)||forbidden.has(name.toLowerCase())||
+                Object.keys(headers).some(key=>key.toLowerCase()===name.toLowerCase()))
+                throw Error('Invalid HTTPX header');
+            headers[name]=value;
+        }
+        const body=payload.subarray(at);
+        if(['GET','HEAD'].includes(method)&&body.length)throw Error('Invalid HTTPX body');
+        return {method,headers,body};
+    }
+    private async http(method:string,target:string,body:Uint8Array,extra:Record<string,string>={}):Promise<NetworkResult>{
         const u=this.safeUrl(target,'http');
         if(['GET','HEAD'].includes(method)&&body.length) return respond(3);
         const ctrl=new AbortController();
@@ -148,9 +193,11 @@ export class NetworkEngine {
             // Copy incoming RPC bytes into that explicitly typed, fetch-safe buffer.
             const requestBody=body.length?new Uint8Array(new ArrayBuffer(body.byteLength)):undefined;
             if(requestBody)requestBody.set(body);
+            const headers=new Headers({'User-Agent':'WeaveCompanion/3'});
+            if(body.length)headers.set('Content-Type','application/octet-stream');
+            for(const [name,value] of Object.entries(extra))headers.set(name,value);
             const res=await fetch(u,{method,redirect:'error',signal:ctrl.signal,
-                body:requestBody,
-                headers:{'User-Agent':'WeaveCompanion/2',...(body.length?{'Content-Type':'application/octet-stream'}:{})}});
+                body:requestBody,headers});
             if(Number(res.headers.get('content-length')||0)>NET_MAX_BYTES)return respond(4);
             const chunks:Buffer[]=[];let n=0;
             if(res.body){
@@ -169,9 +216,14 @@ export class NetworkEngine {
         if(!approved)return respond(7);
         if(!/^[1-9][0-9]{0,9}$/.test(op.id)||Number(op.id)>0xffffffff||
             typeof op.verb!=='string'||typeof op.target!=='string'||
-            op.target.length>191||!(op.data instanceof Uint8Array)||op.data.length>NET_MAX_BYTES)
+            op.target.length>383||!(op.data instanceof Uint8Array)||op.data.length>NET_MAX_BYTES)
             return respond(3);
         try {
+            if(op.verb==='HTTPX') {
+                if(!op.target.startsWith('https://'))return respond(7);
+                const x=this.decodeHttpX(op.data);
+                return await this.http(x.method,op.target,x.body,x.headers);
+            }
             if(['GET','POST','PUT','PATCH','DELETE','HEAD'].includes(op.verb))
                 return await this.http(op.verb,op.target,op.data);
             return await this.socketOperation(op.verb,op.target,op.data);

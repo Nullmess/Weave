@@ -1143,6 +1143,9 @@ public final class WeaveService extends Service {
     private long lastRemoteInputAt;
     private String lastNetworkRequest;
     private boolean networkRequestBusy;
+    private boolean networkEventPending, networkEventPolling;
+    private long networkEventSequence=(System.currentTimeMillis() & 0xffffffffL);
+    private long networkEventQueuedAt;
     private final Runnable networkHeartbeat = new Runnable() {
         @Override public void run() {
             if(stopping) return;
@@ -1161,6 +1164,32 @@ public final class WeaveService extends Service {
                 queueRingtoneTransfer("Net Link", NetworkMailbox.LINK,
                         NetworkMailbox.heartbeat(type, networkSequence++ & 0xffffffffL), null);
                 lastNetworkHeartbeatQueuedAt = now;
+            }
+            /* Watch-enabled sockets may deliver data without a matching FAP
+             * RECV request. Keep the event mailbox single-flight. */
+            if(prefs.getBoolean(KEY_GATEWAY,false) && bleConfirmed && ble != null &&
+                    !networkEventPending && !networkEventPolling && !networkRequestBusy &&
+                    ringTransferActive==null && ringTransfers.isEmpty() &&
+                    !shopTransferActive && ble.isIdleForShop()) {
+                networkEventPolling=true;
+                network.execute(() -> {
+                    NetworkGateway.Event event=null;
+                    try {event=NetworkGateway.pollEvent();}catch(Exception ignored){}
+                    final NetworkGateway.Event ready=event;
+                    handler.post(() -> {
+                        networkEventPolling=false;
+                        if(ready==null||stopping||!bleConfirmed||
+                                !prefs.getBoolean(KEY_GATEWAY,false))return;
+                        networkEventSequence=(networkEventSequence+1)&0xffffffffL;
+                        if(networkEventSequence==0)networkEventSequence=1;
+                        networkEventPending=true;
+                        networkEventQueuedAt=android.os.SystemClock.uptimeMillis();
+                        queueRingtoneTransfer("Net Event", NetworkMailbox.EVENT,
+                                NetworkMailbox.event(networkEventSequence,ready),null);
+                        queueRingtoneTransfer("Net Event Ready", NetworkMailbox.EVENT_READY,
+                                NetworkMailbox.eventReady(networkEventSequence),null);
+                    });
+                });
             }
             // No periodic heartbeat transmission when the gateway is disabled.
             // Check less often until an active BLE gateway needs the scheduler.
@@ -1463,7 +1492,9 @@ public final class WeaveService extends Service {
                     pendingShopStatus == null && pendingShopFap == null &&
                     catalogQueue.isEmpty() && !shopVerifying && !bleCliActive) {
                 final int slot = bridgeProbeIndex++ % 8;
-                final String path = slot == 0 || slot == 2 || slot == 6
+                final String path = slot == 1 && networkEventPending &&
+                        now-networkEventQueuedAt>3500L && prefs.getBoolean(KEY_GATEWAY,false)
+                        ? NetworkMailbox.EVENT_READY : slot == 0 || slot == 2 || slot == 6
                         ? TEXT_INPUT_REQUEST : slot == 3 ? SHOP_REQUEST
                         : slot == 5 ? FW_CHECK_REQ
                         : slot == 7 && prefs.getBoolean(KEY_GATEWAY, false)
@@ -1874,6 +1905,7 @@ public final class WeaveService extends Service {
             @Override public void disconnected() {
                 NetworkGateway.reset();
                 lastNetworkRequest = null;
+                networkEventPending=false;networkEventPolling=false;
                 handler.post(() -> {
                     if (stopping || usb.isReady()) return;
                     usbConfirmed = false;
@@ -2069,6 +2101,11 @@ public final class WeaveService extends Service {
                 }
                 if (FAP_INDEX_RESULT.equals(path)) { onFapIndex(bytes); return; }
                 if (NetworkMailbox.REQUEST.equals(path)) {handleNetworkRequest(bytes); return;}
+                if (NetworkMailbox.EVENT_READY.equals(path)) {
+                    /* Missing marker means that firmware consumed the event. */
+                    if(bytes==null||bytes.length==0)networkEventPending=false;
+                    return;
+                }
                 if (RING_SEARCH_REQ.equals(path)) {handleRingtoneSearch(bytes); return;}
                 if (RING_FETCH_REQ.equals(path)) {handleRingtoneFetch(bytes); return;}
                 if (CLI_OUT.equals(path)) {

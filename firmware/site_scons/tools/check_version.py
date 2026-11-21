@@ -8,8 +8,9 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[2]
 version = (root.parent / "VERSION").read_text().strip()
 assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Invalid version"
-if version != "1.0.0":
-    raise SystemExit("Weave is staying at version 1.0.0 until explicitly changed")
+# Keep release bumps explicit; the 1.0.1 development line is authorized.
+if version not in {"1.0.0", "1.0.1"}:
+    raise SystemExit("Unsupported Weave release line")
 checks = {
     "fbt.py": r'(?m)^DIST_SUFFIX\s*=\s*"([^"]+)"',
     "applications/services/weave/weave_cli.c": r'printf\("Weave ([0-9.]+)',

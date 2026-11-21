@@ -46,6 +46,9 @@ final class NetworkGateway {
         final InputStream in;
         final OutputStream out;
         long last=System.currentTimeMillis();
+        boolean watch;
+        byte[] eventPending;
+        int eventOffset;
         Session(String kind,Socket tcp,DatagramSocket udp) throws IOException {
             this.kind=kind;this.tcp=tcp;this.udp=udp;
             this.in=tcp==null?null:tcp.getInputStream();
@@ -104,7 +107,52 @@ final class NetworkGateway {
         out.write(bytes,0,count);
     }
     private static final class TooLarge extends IOException {}
+    private static final class HttpX {
+        final String method;
+        final Map<String,String> headers;
+        final byte[] body;
+        HttpX(String m,Map<String,String> h,byte[] b){method=m;headers=h;body=b;}
+    }
+    private static HttpX decodeHttpX(byte[] payload) {
+        if(payload.length<6||payload[0]!='H'||payload[1]!='X'||payload[2]!='1')
+            throw new IllegalArgumentException("HTTPX magic");
+        int at=3;
+        int mlen=payload[at++]&255;
+        if(mlen<3||mlen>7||at+mlen+1>payload.length)
+            throw new IllegalArgumentException("HTTPX method");
+        String method=new String(payload,at,mlen,StandardCharsets.US_ASCII);at+=mlen;
+        if(!Arrays.asList("GET","POST","PUT","PATCH","DELETE","HEAD").contains(method))
+            throw new IllegalArgumentException("HTTPX method");
+        int count=payload[at++]&255;
+        if(count>8)throw new IllegalArgumentException("HTTPX headers");
+        Map<String,String> headers=new HashMap<>();
+        for(int i=0;i<count;i++){
+            if(at+3>payload.length)throw new IllegalArgumentException("HTTPX header");
+            int nl=payload[at++]&255,vl=(payload[at++]&255)|((payload[at++]&255)<<8);
+            if(nl<1||nl>64||vl>256||at+nl+vl>payload.length)
+                throw new IllegalArgumentException("HTTPX header");
+            for(int j=at;j<at+nl+vl;j++)if((payload[j]&255)<32||(payload[j]&255)>126)
+                throw new IllegalArgumentException("HTTPX ASCII");
+            String name=new String(payload,at,nl,StandardCharsets.US_ASCII);at+=nl;
+            String value=new String(payload,at,vl,StandardCharsets.US_ASCII);at+=vl;
+            String lower=name.toLowerCase(Locale.ROOT);
+            if(!name.matches("[a-zA-Z0-9-]+")||
+               Arrays.asList("host","content-length","connection","transfer-encoding","upgrade",
+                   "keep-alive","te","trailer","proxy-authorization","proxy-connection").contains(lower))
+                throw new IllegalArgumentException("HTTPX forbidden header");
+            for(String existing:headers.keySet())
+                if(existing.equalsIgnoreCase(name))throw new IllegalArgumentException("Duplicate header");
+            headers.put(name,value);
+        }
+        byte[] body=Arrays.copyOfRange(payload,at,payload.length);
+        if((method.equals("GET")||method.equals("HEAD"))&&body.length>0)
+            throw new IllegalArgumentException("HTTPX unexpected body");
+        return new HttpX(method,headers,body);
+    }
     private static Result http(String method,String target,byte[] data) throws IOException {
+        return http(method,target,data,new HashMap<>());
+    }
+    private static Result http(String method,String target,byte[] data,Map<String,String> headers) throws IOException {
         URL u=url(target,"HTTP");
         if((method.equals("GET")||method.equals("HEAD"))&&data.length!=0)return result(3,0,new byte[0]);
         String host=u.getHost();
@@ -114,12 +162,17 @@ final class NetworkGateway {
             String resource=u.getFile();if(resource.isEmpty())resource="/";
             if(resource.indexOf('\r')>=0||resource.indexOf('\n')>=0)throw new IllegalArgumentException("Bad path");
             String authority=host+((tls&&port==443)||(!tls&&port==80)?"":":"+port);
-            String head=method+" "+resource+" HTTP/1.1\r\nHost: "+authority+
-                "\r\nUser-Agent: WeaveCompanion/2\r\nConnection: close\r\nAccept-Encoding: identity\r\n"+
-                (data.length>0?"Content-Type: application/octet-stream\r\n":"")+
-                "Content-Length: "+data.length+"\r\n\r\n";
+            StringBuilder head=new StringBuilder(method+" "+resource+" HTTP/1.1\r\nHost: "+authority+
+                "\r\nUser-Agent: WeaveCompanion/3\r\nConnection: close\r\nAccept-Encoding: identity\r\n");
+            boolean contentType=false;
+            for(Map.Entry<String,String> header:headers.entrySet()) {
+                if(header.getKey().equalsIgnoreCase("content-type"))contentType=true;
+                head.append(header.getKey()).append(": ").append(header.getValue()).append("\r\n");
+            }
+            if(data.length>0&&!contentType)head.append("Content-Type: application/octet-stream\r\n");
+            head.append("Content-Length: ").append(data.length).append("\r\n\r\n");
             OutputStream out=socket.getOutputStream();
-            out.write(head.getBytes(StandardCharsets.US_ASCII));out.write(data);out.flush();
+            out.write(head.toString().getBytes(StandardCharsets.US_ASCII));out.write(data);out.flush();
             InputStream in=socket.getInputStream();
             String status=readLine(in);
             if(!status.matches("HTTP/1\\.[01] [1-5][0-9][0-9](?: .*)?"))throw new IOException("Bad HTTP response");
@@ -233,6 +286,48 @@ final class NetworkGateway {
             return ok();
         }
     }
+    static final class Event {
+        final String kind;
+        final int session;
+        final byte[] data;
+        Event(String kind,int session,byte[] data){this.kind=kind;this.session=session;this.data=data;}
+    }
+    static synchronized Event pollEvent(){
+        for(Map.Entry<Integer,Session> entry:sessions.entrySet()) {
+            Session s=entry.getValue();
+            if(!s.watch)continue;
+            s.last=System.currentTimeMillis();
+            try {
+                if(s.eventPending==null||s.eventOffset>=s.eventPending.length) {
+                    s.eventPending=null;s.eventOffset=0;
+                    byte[] data;
+                    if(s.kind.equals("WS"))data=wsRecv(s).data;
+                    else {
+                        byte[] buf=new byte[4096];int n;
+                        if(s.kind.equals("UDP")) {
+                            s.udp.setSoTimeout(100);
+                            DatagramPacket packet=new DatagramPacket(buf,buf.length);
+                            s.udp.receive(packet);n=packet.getLength();
+                        }else {
+                            s.tcp.setSoTimeout(100);
+                            n=s.in.read(buf);
+                            if(n<0)throw new IOException("Socket closed");
+                        }
+                        data=Arrays.copyOf(buf,n);
+                    }
+                    if(data.length==0)continue;
+                    s.eventPending=data;
+                }
+                int n=Math.min(4096,s.eventPending.length-s.eventOffset);
+                byte[] part=Arrays.copyOfRange(s.eventPending,s.eventOffset,s.eventOffset+n);
+                s.eventOffset+=n;
+                s.last=System.currentTimeMillis();
+                return new Event(s.kind,entry.getKey(),part);
+            }catch(SocketTimeoutException idle){/* No unsolicited data right now. */}
+            catch(Exception error){s.watch=false;s.close();}
+        }
+        return null;
+    }
     private static Result socketOperation(String verb,String target,byte[] data) throws IOException {
         String[] action=verb.split("_",-1);
         if(action.length!=2)throw new IllegalArgumentException("Verb");
@@ -288,6 +383,13 @@ final class NetworkGateway {
             throw new IllegalArgumentException("Unknown session");
         s.last=System.currentTimeMillis();
         if(operation.equals("CLOSE")){sessions.remove(id);s.close();return ok();}
+        if(operation.equals("WATCH")) {
+            if(data.length!=1 || (data[0]!=0 && data[0]!=1))
+                throw new IllegalArgumentException("Watch mode");
+            s.watch=data[0]==1;
+            s.eventPending=null;s.eventOffset=0;
+            return ok();
+        }
         if(operation.equals("SEND")){
             if(kind.equals("UDP"))s.udp.send(new DatagramPacket(data,data.length));
             else if(kind.equals("WS"))wsSendFrame(s,2,data);
@@ -312,6 +414,11 @@ final class NetworkGateway {
         if(!approved)return result(7,0,new byte[0]);
         try {
             if(request.data.length>LIMIT)return result(4,0,new byte[0]);
+            if(request.verb.equals("HTTPX")) {
+                if(!request.target.startsWith("https://"))return result(7,0,new byte[0]);
+                HttpX x=decodeHttpX(request.data);
+                return http(x.method,request.target,x.body,x.headers);
+            }
             if(Arrays.asList("GET","POST","PUT","PATCH","DELETE","HEAD").contains(request.verb))
                 return http(request.verb,request.target,request.data);
             return socketOperation(request.verb,request.target,request.data);

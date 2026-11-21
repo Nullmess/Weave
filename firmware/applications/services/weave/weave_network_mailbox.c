@@ -17,6 +17,9 @@
 #define WN_REQUEST EXT_PATH(".weave/net.request")
 #define WN_RESPONSE EXT_PATH(".weave/net.response")
 #define WN_READY EXT_PATH(".weave/net.response.ready")
+#define WN_EVENT EXT_PATH(".weave/net.event")
+#define WN_EVENT_READY EXT_PATH(".weave/net.event.ready")
+#define WN_EVENT_MAX 4096U
 #define WN_LINK_LIFETIME_MS 30000U
 #define WN_REQUEST_TIMEOUT_MS 1800000U
 #define WN_BUSY_LEASE_MS 90000U
@@ -31,6 +34,7 @@ typedef struct {
     uint32_t last_lease_poll;
     uint32_t last_fap_poll;
     uint32_t last_sequence;
+    uint32_t last_event_sequence;
     uint32_t dispatched_at;
     uint32_t request_id;
     bool heartbeat_seen;
@@ -126,9 +130,11 @@ static void wn_reply(WeaveNetworkWorker* worker, Storage* storage) {
         storage_file_free(file);
         storage_common_remove(storage, WN_RESPONSE);
         storage_common_remove(storage, WN_READY);
+        if(!worker->request_id) storage_common_remove(storage,WN_REQUEST);
         return;
     }
-    if(id == worker->request_id) {
+    bool matched = id == worker->request_id;
+    if(matched) {
         uint8_t buffer[WEAVE_RESPONSE_MAX];
         uint32_t offset = 0;
         bool success = true;
@@ -154,6 +160,77 @@ static void wn_reply(WeaveNetworkWorker* worker, Storage* storage) {
     storage_file_free(file);
     storage_common_remove(storage, WN_RESPONSE);
     storage_common_remove(storage, WN_READY);
+    /* The request may contain user-supplied headers or other sensitive data.
+     * Do not retain the completed WN2 request file on microSD. */
+    if(matched) storage_common_remove(storage,WN_REQUEST);
+}
+/* A companion may commit one unsolicited socket event at a time.
+ * Its ready marker is written last; both files are consumed together.
+ * Event data is delivered to FAP listeners in bounded chunks. */
+static void wn_socket_event(WeaveNetworkWorker* worker, Storage* storage) {
+    char ready[32] = {0};
+    const size_t count = wn_read(storage,WN_EVENT_READY,(uint8_t*)ready,sizeof(ready)-1);
+    if(!count) return;
+    uint32_t sequence = 0;
+    char tail = 0;
+    if(sscanf(ready,"WE3|%" SCNu32 "%c",&sequence,&tail) != 2 ||
+       !sequence || tail != '\n' || sequence == worker->last_event_sequence) {
+        storage_common_remove(storage,WN_EVENT);
+        storage_common_remove(storage,WN_EVENT_READY);
+        return;
+    }
+    File* file = storage_file_alloc(storage);
+    if(!storage_file_open(file,WN_EVENT,FSAM_READ,FSOM_OPEN_EXISTING)) {
+        storage_file_free(file);
+        storage_common_remove(storage,WN_EVENT_READY);
+        return;
+    }
+    char header[96] = {0};
+    size_t pos = 0;
+    uint8_t ch = 0;
+    while(pos < sizeof(header)-1 && storage_file_read(file,&ch,1)==1) {
+        if(ch == '\n') break;
+        header[pos++] = (char)ch;
+    }
+    header[pos] = 0;
+    uint32_t event_id = 0, length = 0;
+    unsigned session = 0;
+    char kind[4] = {0}, extra = 0;
+    FileInfo info;
+    bool valid = ch == '\n' &&
+        sscanf(header,"WE3|%" SCNu32 "|%3[^|]|%u|%" SCNu32 "%c",
+            &event_id,kind,&session,&length,&extra)==4 &&
+        event_id == sequence && session > 0 && session <= UINT16_MAX &&
+        length > 0 && length <= WN_EVENT_MAX &&
+        storage_common_stat(storage,WN_EVENT,&info)==FSE_OK &&
+        info.size == (uint64_t)(pos+1U)+length;
+    WeaveSocketType type = WeaveSocketTcp;
+    if(valid) {
+        if(!strcmp(kind,"TCP")) type = WeaveSocketTcp;
+        else if(!strcmp(kind,"UDP")) type = WeaveSocketUdp;
+        else if(!strcmp(kind,"WS")) type = WeaveSocketWebSocket;
+        else valid = false;
+    }
+    if(valid) {
+        worker->last_event_sequence = sequence;
+        uint8_t bytes[WEAVE_RESPONSE_MAX];
+        uint32_t offset=0;
+        while(offset < length) {
+            size_t take = length-offset;
+            if(take > sizeof(bytes)) take=sizeof(bytes);
+            if(storage_file_read(file,bytes,take)!=take) break;
+            const WeaveSocketEvent event = {
+                .type=type,.session=(uint16_t)session,.data=bytes,.size=take,
+                .offset=offset,.total=length,.more=(offset+take<length),
+            };
+            weave_gateway_socket_event(worker->weave,&event);
+            offset += take;
+        }
+    }
+    storage_file_close(file);
+    storage_file_free(file);
+    storage_common_remove(storage,WN_EVENT);
+    storage_common_remove(storage,WN_EVENT_READY);
 }
 /* Appends a request body from SD without mapping it into SRAM. */
 static bool wn_send_file(Storage* storage, File* output, const char* path, uint32_t size) {
@@ -178,7 +255,8 @@ static bool wn_send_request(Storage* storage, const WeaveRequest* r) {
     if(r->file_path[0]) {
         if(storage_common_stat(storage,r->file_path,&info) != FSE_OK ||
            info.size > WEAVE_STREAM_MAX) return false;
-        body_length = (uint32_t)info.size;
+        if(info.size > WEAVE_STREAM_MAX - body_length) return false;
+        body_length += (uint32_t)info.size;
     }
     char header[WEAVE_URL_MAX + 72];
     int n = snprintf(header,sizeof(header),"WN2|%" PRIu32 "|%s|%s|%" PRIu32 "\n",
@@ -188,8 +266,10 @@ static bool wn_send_request(Storage* storage, const WeaveRequest* r) {
     bool ok = storage_file_open(output,WN_REQUEST,FSAM_WRITE,FSOM_CREATE_ALWAYS);
     if(ok) {
         ok = storage_file_write(output,header,(size_t)n) == (size_t)n;
-        if(ok && r->file_path[0]) ok = wn_send_file(storage,output,r->file_path,body_length);
-        else if(ok && body_length) ok = storage_file_write(output,r->body,body_length) == body_length;
+        if(ok && r->body_size)
+            ok = storage_file_write(output,r->body,r->body_size) == r->body_size;
+        if(ok && r->file_path[0])
+            ok = wn_send_file(storage,output,r->file_path,body_length - r->body_size);
         storage_file_close(output);
     }
     storage_file_free(output);
@@ -303,6 +383,8 @@ static int32_t wn_thread(void* context) {
                 storage_common_remove(storage,WN_REQUEST);
                 storage_common_remove(storage,WN_RESPONSE);
                 storage_common_remove(storage,WN_READY);
+                storage_common_remove(storage,WN_EVENT);
+                storage_common_remove(storage,WN_EVENT_READY);
                 storage_common_remove(storage,WN_LINK);
                 worker.sd_initialized = true;
             }
@@ -326,10 +408,25 @@ static int32_t wn_thread(void* context) {
                     }
                 }
             }
+            /* A transport change aborts the operation. Do not keep the previous
+             * mailbox lease alive and block the new FIFO head. */
+            if(worker.request_id && !weave_gateway_active(worker.weave,worker.request_id)) {
+                storage_common_remove(storage,WN_REQUEST);
+                storage_common_remove(storage,WN_RESPONSE);
+                storage_common_remove(storage,WN_READY);
+                worker.request_id = 0;
+            }
+            if(weave_get_transport(worker.weave) != WeaveTransportNone)
+                wn_socket_event(&worker,storage);
+            else {
+                storage_common_remove(storage,WN_EVENT);
+                storage_common_remove(storage,WN_EVENT_READY);
+            }
             if(worker.request_id) wn_reply(&worker,storage);
             wn_expire(&worker,storage,now);
-            if(weave_get_transport(worker.weave) != WeaveTransportNone)
-                wn_send(&worker,storage,now);
+            if(weave_get_transport(worker.weave) != WeaveTransportNone) {
+                if(!worker.request_id) wn_send(&worker,storage,now);
+            }
             else if(worker.request_id) {
                 storage_common_remove(storage,WN_REQUEST);
                 storage_common_remove(storage,WN_READY);
@@ -346,6 +443,6 @@ static int32_t wn_thread(void* context) {
     return 0;
 }
 void weave_network_mailbox_init(Weave* weave) {
-    FuriThread* thread = furi_thread_alloc_ex("WeaveNetwork",4096,wn_thread,weave);
+    FuriThread* thread = furi_thread_alloc_ex("WeaveNetwork",6144,wn_thread,weave);
     if(thread) furi_thread_start(thread);
 }

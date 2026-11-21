@@ -6,6 +6,7 @@ const api = {
     disconnectUsb: () => ipcRenderer.invoke('weave:usb:close') as Promise<void>,
     network: (request:{id:string;verb:string;target:string;data:Uint8Array},approved:boolean) => ipcRenderer.invoke('weave:network',request,approved) as Promise<{status:number;code:number;data:Uint8Array}>,
     networkReset: () => ipcRenderer.invoke('weave:network:reset') as Promise<void>,
+    networkEvent: () => ipcRenderer.invoke('weave:network:event') as Promise<{kind:'TCP'|'UDP'|'WS';session:number;data:Uint8Array}|null>,
     onUsb: (callback:(frame:number[])=>void) => { const listener = (_:Electron.IpcRendererEvent,data:number[])=>callback(data); ipcRenderer.on('weave:usb:data',listener); return () => ipcRenderer.off('weave:usb:data',listener); },
     onStatus: (callback:(status:string)=>void) => { const listener = (_:Electron.IpcRendererEvent,status:string)=>callback(status); ipcRenderer.on('weave:status',listener); return () => ipcRenderer.off('weave:status',listener); },
 };

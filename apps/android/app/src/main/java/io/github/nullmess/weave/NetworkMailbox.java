@@ -12,12 +12,15 @@ final class NetworkMailbox {
     static final String REQUEST = "/ext/.weave/net.request";
     static final String RESPONSE = "/ext/.weave/net.response";
     static final String READY = "/ext/.weave/net.response.ready";
+    static final String EVENT = "/ext/.weave/net.event";
+    static final String EVENT_READY = "/ext/.weave/net.event.ready";
     static final int MAX_BODY = 16*1024*1024;
     private static final Set<String> VERBS = new HashSet<>(Arrays.asList(
-        "GET","POST","PUT","PATCH","DELETE","HEAD",
+        "GET","POST","PUT","PATCH","DELETE","HEAD","HTTPX",
         "TCP_OPEN","TCP_SEND","TCP_RECV","TCP_CLOSE",
         "UDP_OPEN","UDP_SEND","UDP_RECV","UDP_CLOSE",
-        "WS_OPEN","WS_SEND","WS_RECV","WS_CLOSE"));
+        "WS_OPEN","WS_SEND","WS_RECV","WS_CLOSE",
+        "TCP_WATCH","UDP_WATCH","WS_WATCH"));
     static final class Request {
         final String id, verb, target;
         final byte[] data;
@@ -26,14 +29,14 @@ final class NetworkMailbox {
         }
     }
     static Request parse(byte[] bytes) {
-        if(bytes==null||bytes.length<14||bytes.length>MAX_BODY+300)return null;
+        if(bytes==null||bytes.length<14||bytes.length>MAX_BODY+520)return null;
         int newline=-1;
-        for(int i=0;i<bytes.length&&i<281;i++)if(bytes[i]=='\n'){newline=i;break;}
+        for(int i=0;i<bytes.length&&i<476;i++)if(bytes[i]=='\n'){newline=i;break;}
         if(newline<0)return null;
         String header=new String(bytes,0,newline,StandardCharsets.US_ASCII);
         String[] parts=header.split("\\|",-1);
         if(parts.length!=5||!"WN2".equals(parts[0])||!parts[1].matches("[1-9][0-9]{0,9}")||
-            !VERBS.contains(parts[2])||parts[3].length()<1||parts[3].length()>=192||
+            !VERBS.contains(parts[2])||parts[3].length()<1||parts[3].length()>=384||
             !parts[4].matches("[0-9]{1,8}"))return null;
         for(char c:parts[3].toCharArray())if(c<33||c>126||c=='|')return null;
         long id,length;
@@ -41,7 +44,7 @@ final class NetworkMailbox {
         catch(NumberFormatException error){return null;}
         if(id>0xffffffffL||length>MAX_BODY||newline+1+length!=bytes.length)return null;
         if(length>0&&(parts[2].equals("GET")||parts[2].equals("HEAD")||
-            !(parts[2].endsWith("SEND")||parts[2].equals("POST")||
+            !(parts[2].endsWith("SEND")||parts[2].endsWith("WATCH")||parts[2].equals("HTTPX")||parts[2].equals("POST")||
               parts[2].equals("PUT")||parts[2].equals("PATCH")||parts[2].equals("DELETE"))))return null;
         return new Request(parts[1],parts[2],parts[3],Arrays.copyOfRange(bytes,newline+1,bytes.length));
     }
@@ -59,6 +62,21 @@ final class NetworkMailbox {
         byte[] combined=Arrays.copyOf(header,header.length+result.data.length);
         System.arraycopy(result.data,0,combined,header.length,result.data.length);
         return combined;
+    }
+    static byte[] event(long seq,NetworkGateway.Event data){
+        if(seq<1||seq>0xffffffffL||data==null||data.session<1||data.session>65535||
+            !("TCP".equals(data.kind)||"UDP".equals(data.kind)||"WS".equals(data.kind))||
+            data.data.length<1||data.data.length>4096)
+            throw new IllegalArgumentException("Invalid socket event");
+        byte[] header=("WE3|"+seq+"|"+data.kind+"|"+data.session+"|"+data.data.length+"\n")
+            .getBytes(StandardCharsets.US_ASCII);
+        byte[] buffer=Arrays.copyOf(header,header.length+data.data.length);
+        System.arraycopy(data.data,0,buffer,header.length,data.data.length);
+        return buffer;
+    }
+    static byte[] eventReady(long seq){
+        if(seq<1||seq>0xffffffffL)throw new IllegalArgumentException("Invalid sequence");
+        return ("WE3|"+seq+"\n").getBytes(StandardCharsets.US_ASCII);
     }
     static byte[] ready(String id){
         if(!id.matches("[1-9][0-9]{0,9}"))throw new IllegalArgumentException("ID");

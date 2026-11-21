@@ -57,9 +57,9 @@ static void	weave_cli(PipeSide *pipe, FuriString *args, void *context)
 	}
 	furi_mutex_acquire(weave->mutex, FuriWaitForever);
 	transport = weave->transport;
-	pending = weave->pending;
+	pending = weave->queue_count != 0;
 	furi_mutex_release(weave->mutex);
-	printf("Weave 1.0.0\r\nGateway: %s\r\n",
+	printf("Weave 1.0.1\r\nGateway: %s\r\n",
 		weave_transport_name(transport));
 	printf("Request: %s\r\n", weave_request_name(pending));
 }

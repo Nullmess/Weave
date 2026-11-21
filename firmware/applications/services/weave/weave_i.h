@@ -12,19 +12,55 @@ typedef struct {
     char file_path[WEAVE_URL_MAX]; /* optional /ext/ upload source */
 } WeaveRequest;
 
-struct Weave {
-    FuriMutex* mutex;
-    WeaveTransport transport;
+typedef struct {
     WeaveRequest request;
     WeaveCallback callback;
     void* context;
-    uint32_t next_id;
-    bool pending;
     bool dispatched;
+} WeaveOperation;
+typedef struct {
+    WeaveTransportCallback callback;
+    void* context;
+} WeaveTransportListener;
+typedef struct {
+    WeaveSocketEventCallback callback;
+    void* context;
+} WeaveSocketEventListener;
+/* Companion sessions are ephemeral and scoped to the opening FAP context.
+ * This filters unsolicited events; it is not an application sandbox. */
+typedef struct {
+    void* context;
+    uint16_t count;
+} WeaveActiveCallback;
+typedef struct {
+    uint16_t id;
+    WeaveSocketType type;
+    void* owner;
+    bool watched;
+} WeaveTrackedSession;
+#define WEAVE_TRACKED_SESSIONS 8
+struct Weave {
+    FuriMutex* mutex;
+    WeaveTransport transport;
+    WeaveOperation queue[WEAVE_QUEUE_MAX];
+    uint8_t queue_count;
+    WeaveTransportListener listeners[4];
+    WeaveSocketEventListener socket_listeners[4];
+    WeaveTrackedSession sessions[WEAVE_TRACKED_SESSIONS];
+    WeaveTrackedSession closing_sessions[WEAVE_TRACKED_SESSIONS];
+    uint8_t closing_count;
+    uint32_t next_id;
+    uint32_t callbacks_active; /* total active callbacks (diagnostics) */
+    /* At most 4 queued replies + 4 transport + 4 socket listeners. */
+    WeaveActiveCallback callbacks_by_context[12];
 };
 
 void weave_reset(Weave* weave);
+void weave_callback_started_locked(Weave* weave, void* context);
+void weave_callback_finished(Weave* weave, void* context);
 void weave_gateway_attach(Weave* weave, WeaveTransport transport);
 bool weave_gateway_poll(Weave* weave, WeaveRequest* request);
+bool weave_gateway_active(Weave* weave, uint32_t id);
+void weave_gateway_socket_event(Weave* weave, const WeaveSocketEvent* event);
 bool weave_gateway_reply(Weave* weave, const WeaveResponse* response);
 #endif

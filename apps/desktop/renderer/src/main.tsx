@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize,{defaultSchema} from 'rehype-sanitize';
 import {FlipperBridge} from './flipper-bridge';
-import {NET_REQUEST,NET_RESPONSE,NET_READY,NET_LINK,parseNetworkRequest,networkReply,networkReady,networkHeartbeat} from './network-mailbox';
+import {NET_REQUEST,NET_RESPONSE,NET_READY,NET_LINK,parseNetworkRequest,networkReply,networkReady,networkHeartbeat,NET_EVENT,NET_EVENT_READY,networkEvent,networkEventReady} from './network-mailbox';
 import {screenPixels,type FileItem} from './flipper-rpc';
 import {createZip,type ArchiveItem} from './archive';
 import './theme.css';
@@ -851,24 +851,36 @@ function App(){
   useEffect(()=>{
     const client=bridge.current;
     if(!connected||!service||!client)return;
-    let cancelled=false, busy=false, sequence=(Date.now()>>>0);
+    let cancelled=false, busy=false, sequence=(Date.now()>>>0), eventSequence=(Date.now()>>>0)||1;
     const tick=async()=>{
       if(cancelled||busy||bridge.current!==client||client.isUploading)return;
       busy=true;
       try{
         const kind=connectionRef.current==='Bluetooth'?'BLE':'USB';
         await client.write(NET_LINK,networkHeartbeat(kind,sequence=(sequence+1)>>>0),()=>{},false);
-        let packet:Uint8Array;
-        try{packet=await client.read(NET_REQUEST);}catch{return;}
-        const request=parseNetworkRequest(packet);
-        if(!request)return;
-        // Remove before processing so a crash cannot replay a completed request.
-        try{await client.delete(NET_REQUEST,false);}catch{return;}
-        const result=await window.weave.network(request,true);
-        if(!cancelled&&bridge.current===client){
-          await client.write(NET_RESPONSE,networkReply(request.id,result),()=>{},false);
-          if(!cancelled&&bridge.current===client)
-            await client.write(NET_READY,networkReady(request.id),()=>{},false);
+        let packet:Uint8Array|null=null;
+        try{packet=await client.read(NET_REQUEST);}catch{/* No pending request. */}
+        const request=packet?parseNetworkRequest(packet):null;
+        if(request){
+          // Remove before processing so a crash cannot replay a completed request.
+          try{await client.delete(NET_REQUEST,false);}catch{return;}
+          const result=await window.weave.network(request,true);
+          if(!cancelled&&bridge.current===client){
+            await client.write(NET_RESPONSE,networkReply(request.id,result),()=>{},false);
+            if(!cancelled&&bridge.current===client)
+              await client.write(NET_READY,networkReady(request.id),()=>{},false);
+          }
+        }
+        if(cancelled||bridge.current!==client)return;
+        let markerExists=false;
+        try{await client.read(NET_EVENT_READY);markerExists=true;}catch{/* Firmware consumed the previous event. */}
+        if(!markerExists){
+          const event=await window.weave.networkEvent();
+          if(event){
+            eventSequence=(eventSequence+1)>>>0;if(!eventSequence)eventSequence=1;
+            await client.write(NET_EVENT,networkEvent(eventSequence,event),()=>{},false);
+            await client.write(NET_EVENT_READY,networkEventReady(eventSequence),()=>{},false);
+          }
         }
       }catch(error){if(!cancelled)notify('Network bridge: '+String(error));}
       finally{busy=false;}
