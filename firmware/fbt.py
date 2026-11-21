@@ -22,7 +22,7 @@ COMPACT = 1
 DEBUG = 1
 
 # Version firmware
-DIST_SUFFIX = "1.0.0"
+DIST_SUFFIX = "1.0.1"
 
 COPRO_OB_DATA = "site_scons/tools/ob.data"
 
