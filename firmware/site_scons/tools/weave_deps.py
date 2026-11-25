@@ -2,6 +2,9 @@
 """Dépendances externes hors du dépôt et nettoyage réversible."""
 
 import configparser
+import hashlib
+import tarfile
+import urllib.request
 import os
 import shutil
 import stat
@@ -15,17 +18,31 @@ CACHE_BASE = (Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / 
     if os.name == "nt" else (Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "weave")
 CACHE = Path(os.environ.get("WEAVE_CACHE_HOME", str(CACHE_BASE))).expanduser().resolve() / "deps"
 SOURCE = "https://github.com/flipperdevices/flipperzero-firmware.git"
+MONOCYPHER_VERSION = "4.0.3"
+MONOCYPHER = ROOT / "lib" / f"monocypher-{MONOCYPHER_VERSION}"
+MONOCYPHER_SHA512 = (
+    "40904ada5c7ee4f7741733e38b69a30a4b0561cbffba5ffe7c2dce16136d540251"
+    "ec0d9056ff606510d3b5b708fb8a40db7e0870d4a0b2dc17ba2bfb880f8965"
+)
+MONOCYPHER_FILES = (
+    "src/monocypher.c", "src/monocypher.h",
+    "src/optional/monocypher-ed25519.c", "src/optional/monocypher-ed25519.h",
+    "LICENCE.md",
+)
+
 
 
 def sources():
     config = configparser.ConfigParser()
     config.read(ROOT.parent / ".gitmodules")
-    return [ROOT.parent / config[name]["path"] for name in config.sections()]
+    return [ROOT.parent / config[name]["path"] for name in config.sections()] + [MONOCYPHER]
 
 
 def ready(path):
     if not path.is_dir():
         return False
+    if path.name == MONOCYPHER.name:
+        return all((path / item).is_file() for item in MONOCYPHER_FILES)
     return any(item.is_file() and item.name != ".git" for item in path.rglob("*"))
 
 
@@ -132,7 +149,65 @@ def link_cache(target):
         target.symlink_to(cached, target_is_directory=True)
 
 
+def bootstrap_monocypher():
+    """Pin the release archive, extract only required source/license files.
+
+    Monocypher is not a Flipper upstream submodule. Cache it separately and
+    use the usual managed link, so `clean` restores the source layout.
+    """
+    CACHE.mkdir(parents=True, exist_ok=True)
+    cached = cache_path(MONOCYPHER)
+    urls = (
+        f"https://monocypher.org/download/monocypher-{MONOCYPHER_VERSION}.tar.gz",
+        f"https://github.com/LoupVaillant/Monocypher/releases/download/{MONOCYPHER_VERSION}/monocypher-{MONOCYPHER_VERSION}.tar.gz",
+    )
+    with tempfile.TemporaryDirectory(prefix=".monocypher-", dir=CACHE) as folder:
+        archive = Path(folder) / "release.tar.gz"
+        failures = []
+        for url in urls:
+            try:
+                request = urllib.request.Request(url, headers={"User-Agent": "Weave-Build/1.0.2"})
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    data = response.read(8 * 1024 * 1024 + 1)
+                if len(data) > 8 * 1024 * 1024 or hashlib.sha512(data).hexdigest() != MONOCYPHER_SHA512:
+                    raise RuntimeError("Monocypher release checksum mismatch")
+                archive.write_bytes(data)
+                break
+            except (OSError, RuntimeError) as error:
+                failures.append(f"{url}: {error}")
+        else:
+            raise RuntimeError("Monocypher unavailable: " + "; ".join(failures))
+        staged = Path(folder) / "staged"
+        with tarfile.open(archive, "r:gz") as tar:
+            for name in MONOCYPHER_FILES:
+                member = tar.getmember(f"monocypher-{MONOCYPHER_VERSION}/{name}")
+                if not member.isfile():
+                    raise RuntimeError(f"Invalid Monocypher archive entry: {name}")
+                target = staged / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(member) as source, target.open("wb") as out:
+                    shutil.copyfileobj(source, out)
+        if not all((staged / name).is_file() for name in MONOCYPHER_FILES):
+            raise RuntimeError("Incomplete Monocypher archive")
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        if cached.exists():
+            if ready(cached):
+                link_cache(MONOCYPHER)
+                return
+            if any(cached.iterdir()):
+                raise RuntimeError(f"Incomplete non-empty Monocypher cache: {cached}")
+            cached.rmdir()
+        staged.rename(cached)
+        link_cache(MONOCYPHER)
+        print(f"Weave: Monocypher {MONOCYPHER_VERSION} SHA-512 verified", flush=True)
+
+
 def bootstrap(missing):
+    if MONOCYPHER in missing:
+        bootstrap_monocypher()
+        missing = [target for target in missing if target != MONOCYPHER]
+    if not missing:
+        return
     CACHE.mkdir(parents=True, exist_ok=True)
     url = os.environ.get("WEAVE_UPSTREAM_URL", SOURCE)
     ref = os.environ.get("WEAVE_UPSTREAM_REF", "1.5.1")
@@ -193,7 +268,7 @@ def main():
             print("Weave : dépendances absentes (bootstrap désactivé)", file=sys.stderr)
             return 1
         bootstrap(missing)
-    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+    except (OSError, subprocess.CalledProcessError, RuntimeError, tarfile.TarError, KeyError) as error:
         print(f"Weave : dépendances indisponibles : {error}", file=sys.stderr)
         return 1
     return 0 if all(ready(path) for path in sources()) else 1

@@ -53,7 +53,7 @@ final class WeaveUpdates {
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(12000);
             connection.setReadTimeout(20000);
-            connection.setRequestProperty("User-Agent", "Weave/1.0.1");
+            connection.setRequestProperty("User-Agent", "Weave/1.0.2");
             connection.setRequestProperty("Accept", "application/vnd.github+json, */*");
             int status = connection.getResponseCode();
             if (status >= 300 && status < 400) {

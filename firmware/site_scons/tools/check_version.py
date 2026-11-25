@@ -8,8 +8,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[2]
 version = (root.parent / "VERSION").read_text().strip()
 assert re.fullmatch(r"\d+\.\d+\.\d+", version), "Invalid version"
-# Keep release bumps explicit; the 1.0.1 development line is authorized.
-if version not in {"1.0.0", "1.0.1"}:
+# Keep release bumps explicit; the 1.0.2 development line is authorized.
+if version != "1.0.2":
     raise SystemExit("Unsupported Weave release line")
 checks = {
     "fbt.py": r'(?m)^DIST_SUFFIX\s*=\s*"([^"]+)"',

@@ -195,33 +195,25 @@ static void weave_preview_check(Storage* storage) {
     storage_file_free(file);
 }
 
-static int32_t weave_ble_cli_worker(void* context) {
-    UNUSED(context);
-    Storage* storage = furi_record_open(RECORD_STORAGE);
-    WeaveBleCli state = {0};
-    bool directory_ready = false;
-    for(;;) {
-        if(storage_sd_status(storage) == FSE_OK) {
-            if(!directory_ready)
-                directory_ready = storage_simply_mkdir(storage, EXT_PATH(".weave"));
-            if(directory_ready) {
-                if(weave_find_flipper_check(storage))
-                    weave_ringtone_find_flipper();
-                weave_alert_check(storage);
-                weave_preview_check(storage);
-                weave_ble_cli_input(&state, storage);
-                weave_ble_cli_output(&state, storage);
-            }
-        } else directory_ready = false;
-        if(state.shell && (uint32_t)(furi_get_tick() - state.last_activity) > WEAVE_CLI_IDLE_TICKS)
-            weave_ble_cli_stop(&state);
-        furi_delay_ms(180);
-    }
-    return 0;
-}
-
-void weave_ble_cli_init(void) {
-    // Small idle worker; CLI shell and its stack are created only on demand.
-    FuriThread* thread = furi_thread_alloc_ex("WeaveBleCli", 2048, weave_ble_cli_worker, NULL);
-    if(thread) furi_thread_start(thread);
+/* Called from the existing WeaveNetwork worker. There is no need to reserve
+ * another 2 KiB RTOS thread stack merely to poll the same Storage RPC files.
+ * The interactive CLI shell itself is still created only on demand. */
+void weave_ble_cli_poll(Storage* storage) {
+    static WeaveBleCli state;
+    static bool directory_ready;
+    if(storage_sd_status(storage) == FSE_OK) {
+        if(!directory_ready)
+            directory_ready = storage_simply_mkdir(storage, EXT_PATH(".weave"));
+        if(directory_ready) {
+            if(weave_find_flipper_check(storage))
+                weave_ringtone_find_flipper();
+            weave_alert_check(storage);
+            weave_preview_check(storage);
+            weave_ble_cli_input(&state, storage);
+            weave_ble_cli_output(&state, storage);
+        }
+    } else directory_ready = false;
+    if(state.shell &&
+       (uint32_t)(furi_get_tick() - state.last_activity) > WEAVE_CLI_IDLE_TICKS)
+        weave_ble_cli_stop(&state);
 }

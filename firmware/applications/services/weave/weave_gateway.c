@@ -78,7 +78,10 @@ void weave_gateway_attach(Weave* weave, WeaveTransport transport) {
             contexts[i] = weave->queue[i].context;
             ids[i] = weave->queue[i].request.id;
         }
-        memset(weave->queue, 0, sizeof(weave->queue));
+        /* Aborting a transport frees the whole FIFO, including its unused
+         * capacity. Callback IDs/contexts have already been copied above. */
+        free(weave->queue);
+        weave->queue = NULL;
         memset(weave->sessions, 0, sizeof(weave->sessions));
         memset(weave->closing_sessions, 0, sizeof(weave->closing_sessions));
         weave->closing_count = 0;

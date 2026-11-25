@@ -1,3 +1,4 @@
+#include "weave_permissions.h"
 #include "weave_i.h"
 #include <stdio.h>
 #include <string.h>
@@ -10,10 +11,29 @@ static void weave_cleanup_reply(const WeaveResponse* response, void* context) {
     (void)context;
 }
 
+bool weave_queue_reserve_locked(Weave* weave) {
+    if(weave->queue) return true;
+    WeaveOperation* queue = malloc(WEAVE_QUEUE_MAX * sizeof(WeaveOperation));
+    if(!queue) return false;
+    memset(queue, 0, WEAVE_QUEUE_MAX * sizeof(WeaveOperation));
+    weave->queue = queue;
+    return true;
+}
+
+void weave_queue_release_if_idle_locked(Weave* weave) {
+    if(weave->queue_count == 0 && weave->queue) {
+        free(weave->queue);
+        weave->queue = NULL;
+    }
+}
+
 /* Queues a best-effort remote CLOSE for sockets owned by an unloaded FAP.
  * Call only while holding the Weave mutex. The worker never runs FAP code
  * for these cleanup requests. */
 static void weave_flush_cleanup_locked(Weave* weave) {
+    if(weave->closing_count && weave->queue_count < WEAVE_QUEUE_MAX &&
+       weave->transport != WeaveTransportNone &&
+       !weave_queue_reserve_locked(weave)) return;
     while(weave->closing_count && weave->queue_count < WEAVE_QUEUE_MAX &&
           weave->transport != WeaveTransportNone) {
         const WeaveTrackedSession session = weave->closing_sessions[0];
@@ -79,8 +99,10 @@ bool weave_context_release(Weave* weave, void* context, uint32_t timeout_ms) {
             kept++;
         }
     }
-    for(size_t i = kept; i < WEAVE_QUEUE_MAX; i++)
-        memset(&weave->queue[i], 0, sizeof(WeaveOperation));
+    if(weave->queue) {
+        for(size_t i = kept; i < WEAVE_QUEUE_MAX; i++)
+            memset(&weave->queue[i], 0, sizeof(WeaveOperation));
+    }
     weave->queue_count = kept;
     for(size_t i = 0; i < COUNT_OF(weave->sessions); i++) {
         if(weave->sessions[i].id && weave->sessions[i].owner == context) {
@@ -90,6 +112,7 @@ bool weave_context_release(Weave* weave, void* context, uint32_t timeout_ms) {
         }
     }
     weave_flush_cleanup_locked(weave);
+    weave_queue_release_if_idle_locked(weave);
     for(size_t i = 0; i < COUNT_OF(weave->listeners); i++)
         if(weave->listeners[i].context == context)
             weave->listeners[i] = (WeaveTransportListener){0};
@@ -140,6 +163,7 @@ void weave_reset(Weave* weave) {
     weave->queue_count--;
     memset(&weave->queue[weave->queue_count], 0, sizeof(WeaveOperation));
     weave_flush_cleanup_locked(weave);
+    weave_queue_release_if_idle_locked(weave);
 }
 bool weave_transport_subscribe(Weave* weave, WeaveTransportCallback cb, void* ctx) {
     if(!weave || !cb) return false;
@@ -210,6 +234,12 @@ static WeaveStatus submit(Weave* weave, const char* verb, const char* target,
     if(!weave || !cb || !safe_field(verb, sizeof(((WeaveRequest*)0)->method)) ||
        !safe_field(target, WEAVE_URL_MAX) || size > WEAVE_RESPONSE_MAX || (size && !data))
         return WeaveStatusInvalid;
+    /* Permission check is outside the queue mutex: user consent is blocking. */
+    const bool socket = !strncmp(verb, "TCP_", 4) || !strncmp(verb, "UDP_", 4) ||
+                        !strncmp(verb, "WS_", 3);
+    const WeavePermission permission = file_path ? WeavePermissionUpload :
+        socket ? WeavePermissionSocket : WeavePermissionHttp;
+    if(!weave_permission_check(permission)) return WeaveStatusDenied;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
     WeaveStatus status = WeaveStatusOk;
     if(weave->transport == WeaveTransportNone) status = WeaveStatusOffline;
@@ -232,6 +262,8 @@ static WeaveStatus submit(Weave* weave, const char* verb, const char* target,
             }
             if(!owned) status = WeaveStatusDenied;
         }
+        if(status == WeaveStatusOk && !weave_queue_reserve_locked(weave))
+            status = WeaveStatusBusy;
         if(status == WeaveStatusOk) {
             if(++weave->next_id == 0) ++weave->next_id;
             WeaveOperation* op = &weave->queue[weave->queue_count++];
@@ -389,10 +421,20 @@ WeaveStatus weave_socket_open(Weave* w, WeaveSocketType type, const char* host,
         if(strncmp(host, "wss://", 6) && strncmp(host, "ws://", 5)) return WeaveStatusInvalid;
         return submit(w, verb, host, NULL, 0, NULL, cb, ctx);
     }
-    if(!port || strlen(host) > WEAVE_URL_MAX - 8 || strchr(host, ':') || strchr(host, '/'))
+    /* TCP/UDP accept hostnames, IPv4, or IPv6 literals. IPv6 literals are
+     * framed as [address]:port on WN2, without changing its protocol version.
+     * The companion performs full IP syntax validation before connecting. */
+    const bool ipv6 = strchr(host, ':') != NULL;
+    if(!port || strchr(host, '/') || strchr(host, '[') || strchr(host, ']') ||
+       strchr(host, '%') || strlen(host) > WEAVE_URL_MAX - (ipv6 ? 10 : 8))
         return WeaveStatusInvalid;
+    if(ipv6) {
+        for(const char* p = host; *p; p++)
+            if(!(isxdigit((unsigned char)*p) || *p == ':' || *p == '.'))
+                return WeaveStatusInvalid;
+    }
     char target[WEAVE_URL_MAX];
-    snprintf(target, sizeof(target), "%s:%u", host, port);
+    snprintf(target, sizeof(target), ipv6 ? "[%s]:%u" : "%s:%u", host, port);
     return submit(w, verb, target, NULL, 0, NULL, cb, ctx);
 }
 static WeaveStatus socket_op(Weave* w, WeaveSocketType type, const char* action,

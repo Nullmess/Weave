@@ -1,0 +1,30 @@
+# Monocypher 4.0.3; downloaded and checksum-verified by weave_deps.py.
+Import("env")
+
+env.AppendUnique(CPPPATH=[
+    "#/lib/monocypher-4.0.3/src",
+    "#/lib/monocypher-4.0.3/src/optional",
+])
+
+libenv = env.Clone(FW_LIB_NAME="monocypher")
+libenv.ApplyLibFlags()
+
+# Compact main firmware only; keep ordinary object code available for non-LTO users.
+if env["IS_BASE_FIRMWARE"] and env["COMPACT"]:
+    libenv.AppendUnique(CCFLAGS=["-flto", "-ffat-lto-objects"])
+    libenv.Replace(
+        AR=libenv.subst("${TOOLCHAIN_PREFIX}gcc-ar"),
+        RANLIB=libenv.subst("${TOOLCHAIN_PREFIX}gcc-ranlib"),
+        # GCC 12 gcc-ar treats a leading @response-file as an operation.
+        # Pass the operation, archive and object paths directly for LTO archives.
+        ARCOM="$AR $ARFLAGS $TARGET $SOURCES",
+    )
+
+# Keep function/data section GC enabled. No Monocypher headers in SDK_HEADERS.
+sources = [
+    File("monocypher-4.0.3/src/monocypher.c"),
+    File("monocypher-4.0.3/src/optional/monocypher-ed25519.c"),
+]
+lib = libenv.StaticLibrary("${FW_LIB_NAME}", sources)
+libenv.Install("${LIB_DIST_DIR}", lib)
+Return("lib")

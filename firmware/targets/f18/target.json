@@ -27,6 +27,7 @@
         "music_worker",
         "mjs",
         "mbedtls",
+        "monocypher",
         "flipper_application",
         "u8g2",
         "nanopb",

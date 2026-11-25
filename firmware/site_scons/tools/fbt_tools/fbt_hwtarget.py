@@ -128,6 +128,22 @@ def ApplyLibFlags(env):
 
     env.MergeFlags(flags_to_apply)
 
+    # Cross-module optimization for higher-level libraries, without changing
+    # the updater or HAL/RTOS and signal acquisition timing. Fat objects retain
+    # ordinary machine code for any independently linked external application.
+    if env["IS_BASE_FIRMWARE"] and env["COMPACT"] and env.get("FW_LIB_NAME") in {
+        "toolbox", "flipperformat", "flipper_application", "u8g2", "mjs",
+        "nfc", "subghz", "lfrfid", "ibutton",
+    }:
+        env.AppendUnique(CCFLAGS=["-flto", "-ffat-lto-objects"])
+        env.Replace(
+            AR=env.subst("${TOOLCHAIN_PREFIX}gcc-ar"),
+            RANLIB=env.subst("${TOOLCHAIN_PREFIX}gcc-ranlib"),
+            # GCC 12 gcc-ar treats a leading @response-file as an operation.
+            # Pass the operation, archive and object paths directly for LTO archives.
+            ARCOM="$AR $ARFLAGS $TARGET $SOURCES",
+        )
+
 
 def generate(env):
     env.AddMethod(ConfigureForTarget)

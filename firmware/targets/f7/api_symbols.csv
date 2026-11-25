@@ -1,5 +1,5 @@
 entry,status,name,type,params
-Version,+,88.4,,
+Version,+,89.2,,
 Header,+,applications/drivers/subghz/cc1101_ext/cc1101_ext_interconnect.h,,
 Header,+,applications/services/bt/bt_service/bt.h,,
 Header,+,applications/services/bt/bt_service/bt_keys_storage.h,,
@@ -43,6 +43,9 @@ Header,+,applications/services/power/power_service/power.h,,
 Header,+,applications/services/rpc/rpc_app.h,,
 Header,+,applications/services/storage/storage.h,,
 Header,+,applications/services/weave/weave.h,,
+Header,+,applications/services/weave/weave_permissions.h,,
+Header,+,applications/services/weave/weave_security.h,,
+Header,+,applications/services/weave/weave_usb.h,,
 Header,+,lib/bit_lib/bit_lib.h,,
 Header,+,lib/ble_profile/extra_profiles/hid_profile.h,,
 Header,+,lib/ble_profile/extra_services/hid_service.h,,
@@ -326,6 +329,7 @@ Header,+,targets/furi_hal_include/furi_hal_spi.h,,
 Header,+,targets/furi_hal_include/furi_hal_usb.h,,
 Header,+,targets/furi_hal_include/furi_hal_usb_hid.h,,
 Header,+,targets/furi_hal_include/furi_hal_usb_hid_u2f.h,,
+Header,-,targets/furi_hal_include/furi_hal_usb_weave.h,,
 Header,+,targets/furi_hal_include/furi_hal_version.h,,
 Header,+,targets/furi_hal_include/furi_hal_vibro.h,,
 Function,-,LL_ADC_CommonDeInit,ErrorStatus,ADC_Common_TypeDef*
@@ -1597,9 +1601,9 @@ Function,+,furi_hal_random_fill_buf,void,"uint8_t*, uint32_t"
 Function,+,furi_hal_random_get,uint32_t,
 Function,+,furi_hal_random_init,void,
 Function,+,furi_hal_region_get,const FuriHalRegion*,
-Function,-,furi_hal_region_get_tx_bypass,_Bool,
 Function,+,furi_hal_region_get_band,const FuriHalRegionBand*,uint32_t
 Function,+,furi_hal_region_get_name,const char*,
+Function,-,furi_hal_region_get_tx_bypass,_Bool,
 Function,-,furi_hal_region_init,void,
 Function,+,furi_hal_region_is_frequency_allowed,_Bool,uint32_t
 Function,+,furi_hal_region_is_provisioned,_Bool,
@@ -1761,6 +1765,7 @@ Function,+,furi_hal_subghz_stop_async_tx,void,
 Function,+,furi_hal_subghz_tx,_Bool,
 Function,+,furi_hal_subghz_write_packet,void,"const uint8_t*, uint8_t"
 Function,+,furi_hal_switch,void,void*
+Function,+,furi_hal_usb_acquire_config,_Bool,"FuriHalUsbInterface*, FuriHalUsbInterface*, void*"
 Function,+,furi_hal_usb_disable,void,
 Function,+,furi_hal_usb_enable,void,
 Function,+,furi_hal_usb_get_config,FuriHalUsbInterface*,
@@ -1768,6 +1773,7 @@ Function,-,furi_hal_usb_init,void,
 Function,+,furi_hal_usb_is_locked,_Bool,
 Function,+,furi_hal_usb_lock,void,
 Function,+,furi_hal_usb_reinit,void,
+Function,+,furi_hal_usb_release_config,_Bool,"FuriHalUsbInterface*, FuriHalUsbInterface*"
 Function,+,furi_hal_usb_set_config,_Bool,"FuriHalUsbInterface*, void*"
 Function,+,furi_hal_usb_set_state_callback,void,"FuriHalUsbStateCallback, void*"
 Function,+,furi_hal_usb_unlock,void,
@@ -1799,6 +1805,11 @@ Function,+,furi_hal_version_uid,const uint8_t*,
 Function,+,furi_hal_version_uid_size,size_t,
 Function,-,furi_hal_vibro_init,void,
 Function,+,furi_hal_vibro_on,void,_Bool
+Function,-,furi_hal_weave_usb_configure_hid,_Bool,"const uint8_t*, size_t, uint8_t"
+Function,-,furi_hal_weave_usb_connected,_Bool,
+Function,-,furi_hal_weave_usb_notify_card,_Bool,_Bool
+Function,-,furi_hal_weave_usb_receive,_Bool,"FuriHalWeaveUsbChannel, uint8_t*, size_t, size_t*"
+Function,-,furi_hal_weave_usb_transmit,_Bool,"FuriHalWeaveUsbChannel, const uint8_t*, size_t"
 Function,-,furi_init,void,
 Function,+,furi_kernel_get_tick_frequency,uint32_t,
 Function,+,furi_kernel_is_irq_or_masked,_Bool,
@@ -3891,6 +3902,44 @@ Function,+,weave_http_request,WeaveStatus,"Weave*, const char*, const char*, con
 Function,+,weave_http_request_ex,WeaveStatus,"Weave*, const char*, const char*, const WeaveHttpHeader*, size_t, const uint8_t*, size_t, WeaveCallback, void*"
 Function,+,weave_http_upload_file,WeaveStatus,"Weave*, const char*, const char*, const char*, WeaveCallback, void*"
 Function,+,weave_http_upload_file_ex,WeaveStatus,"Weave*, const char*, const char*, const WeaveHttpHeader*, size_t, const char*, WeaveCallback, void*"
+Function,+,weave_permission_check,_Bool,WeavePermission
+Function,+,weave_permission_has,_Bool,WeavePermission
+Function,+,weave_permission_revoke_self,void,
+Function,+,weave_secret_delete,WeaveSecurityResult,"const char*, const char*"
+Function,+,weave_secret_load,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, uint8_t*, size_t, size_t*"
+Function,+,weave_secret_store,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_aead_decrypt,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t[16], uint8_t*"
+Function,+,weave_security_aead_encrypt,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, uint8_t[16]"
+Function,+,weave_security_aes_cbc,_Bool,"_Bool, const uint8_t*, size_t, const uint8_t*, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_aes_ecb,_Bool,"_Bool, const uint8_t*, size_t, const uint8_t*, uint8_t*"
+Function,+,weave_security_digest,_Bool,"WeaveDigest, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_digest_size,size_t,WeaveDigest
+Function,+,weave_security_ec_generate,_Bool,"WeaveCurve, uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ec_public,_Bool,"WeaveCurve, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ecdh,_Bool,"WeaveCurve, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ecdsa_sign,_Bool,"WeaveCurve, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ecdsa_verify,_Bool,"WeaveCurve, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_ed25519_generate,_Bool,"uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519_public,_Bool,"const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519_sign,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519_verify,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_ed25519ph_sign,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519ph_verify,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_equal,_Bool,"const uint8_t*, const uint8_t*, size_t"
+Function,+,weave_security_hkdf_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_hmac,_Bool,"WeaveDigest, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_hmac_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t[32]"
+Function,+,weave_security_pbkdf2_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint32_t, uint8_t*, size_t"
+Function,+,weave_security_random,_Bool,"uint8_t*, size_t"
+Function,+,weave_security_rsa_generate,_Bool,"uint16_t, uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_oaep_decrypt,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t, size_t*"
+Function,+,weave_security_rsa_oaep_encrypt,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_private_block,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_public,_Bool,"const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_sign,_Bool,"_Bool, WeaveDigest, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_verify,_Bool,"_Bool, WeaveDigest, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_sha256,_Bool,"const uint8_t*, size_t, uint8_t[32]"
+Function,+,weave_security_wipe,void,"void*, size_t"
 Function,+,weave_socket_close,WeaveStatus,"Weave*, WeaveSocketType, uint16_t, WeaveCallback, void*"
 Function,+,weave_socket_open,WeaveStatus,"Weave*, WeaveSocketType, const char*, uint16_t, WeaveCallback, void*"
 Function,+,weave_socket_receive,WeaveStatus,"Weave*, WeaveSocketType, uint16_t, WeaveCallback, void*"
@@ -3900,6 +3949,14 @@ Function,+,weave_socket_unsubscribe_events,void,"Weave*, WeaveSocketEventCallbac
 Function,+,weave_socket_watch,WeaveStatus,"Weave*, WeaveSocketType, uint16_t, _Bool, WeaveCallback, void*"
 Function,+,weave_transport_subscribe,_Bool,"Weave*, WeaveTransportCallback, void*"
 Function,+,weave_transport_unsubscribe,void,"Weave*, WeaveTransportCallback, void*"
+Function,+,weave_usb_acquire,WeaveUsbResult,"void*, WeaveUsbMode"
+Function,+,weave_usb_acquire_ex,WeaveUsbResult,"void*, WeaveUsbMode, const uint8_t*, size_t, uint8_t"
+Function,+,weave_usb_ccid_notify,WeaveUsbResult,"void*, _Bool"
+Function,+,weave_usb_cdc_available,_Bool,
+Function,+,weave_usb_connected,_Bool,void*
+Function,+,weave_usb_receive,WeaveUsbResult,"void*, WeaveUsbChannel, uint8_t*, size_t, size_t*"
+Function,+,weave_usb_release,WeaveUsbResult,void*
+Function,+,weave_usb_transmit,WeaveUsbResult,"void*, WeaveUsbChannel, const uint8_t*, size_t"
 Function,+,widget_add_button_element,void,"Widget*, GuiButtonType, const char*, ButtonCallback, void*"
 Function,+,widget_add_circle_element,void,"Widget*, uint8_t, uint8_t, uint8_t, _Bool"
 Function,+,widget_add_icon_element,void,"Widget*, uint8_t, uint8_t, const Icon*"
@@ -4231,4 +4288,7 @@ Variable,+,usb_cdc_dual,FuriHalUsbInterface,
 Variable,+,usb_cdc_single,FuriHalUsbInterface,
 Variable,+,usb_hid,FuriHalUsbInterface,
 Variable,+,usb_hid_u2f,FuriHalUsbInterface,
+Variable,-,usb_weave_ccid,FuriHalUsbInterface,
+Variable,-,usb_weave_composite,FuriHalUsbInterface,
+Variable,-,usb_weave_hid,FuriHalUsbInterface,
 Variable,+,usbd_devfs,const usbd_driver,

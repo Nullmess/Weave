@@ -1514,6 +1514,7 @@ Function,-,furi_hal_spi_config_init_early,void,
 Function,-,furi_hal_spi_dma_init,void,
 Function,+,furi_hal_spi_release,void,const FuriHalSpiBusHandle*
 Function,+,furi_hal_switch,void,void*
+Function,+,furi_hal_usb_acquire_config,_Bool,"FuriHalUsbInterface*, FuriHalUsbInterface*, void*"
 Function,+,furi_hal_usb_disable,void,
 Function,+,furi_hal_usb_enable,void,
 Function,+,furi_hal_usb_get_config,FuriHalUsbInterface*,
@@ -1521,6 +1522,7 @@ Function,-,furi_hal_usb_init,void,
 Function,+,furi_hal_usb_is_locked,_Bool,
 Function,+,furi_hal_usb_lock,void,
 Function,+,furi_hal_usb_reinit,void,
+Function,+,furi_hal_usb_release_config,_Bool,"FuriHalUsbInterface*, FuriHalUsbInterface*"
 Function,+,furi_hal_usb_set_config,_Bool,"FuriHalUsbInterface*, void*"
 Function,+,furi_hal_usb_set_state_callback,void,"FuriHalUsbStateCallback, void*"
 Function,+,furi_hal_usb_unlock,void,

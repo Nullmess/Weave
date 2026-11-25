@@ -28,6 +28,10 @@
 #define WN_FAP_INDEX EXT_PATH(".weave/fap-index.txt")
 #define WN_FAP_INDEX_TMP EXT_PATH(".weave/fap-index.tmp")
 
+/* BLE CLI, notifications and network requests share the Storage RPC polling
+ * thread to avoid permanently reserving a second idle thread stack. */
+extern void weave_ble_cli_poll(Storage* storage);
+
 typedef struct {
     Weave* weave;
     uint32_t last_heartbeat;
@@ -438,11 +442,18 @@ static int32_t wn_thread(void* context) {
             worker.request_id = 0;
             weave_gateway_attach(worker.weave,WeaveTransportNone);
         }
+        weave_ble_cli_poll(storage);
         furi_delay_ms(WN_POLL_MS);
     }
     return 0;
 }
 void weave_network_mailbox_init(Weave* weave) {
-    FuriThread* thread = furi_thread_alloc_ex("WeaveNetwork",6144,wn_thread,weave);
-    if(thread) furi_thread_start(thread);
+    /* Permanent worker: use the platform's SRAM2 service pool when available,
+     * falling back to the ordinary heap. Do not shrink the stack blindly. */
+    const size_t heap_before = memmgr_get_free_heap();
+    const size_t pool_before = memmgr_pool_get_free();
+    FuriThread* thread = furi_thread_alloc_service("WeaveNetwork",6144,wn_thread,weave);
+    FURI_LOG_I("WeaveNetwork", "Worker heap %zu -> %zu, pool %zu -> %zu",
+        heap_before, memmgr_get_free_heap(), pool_before, memmgr_pool_get_free());
+    furi_thread_start(thread);
 }

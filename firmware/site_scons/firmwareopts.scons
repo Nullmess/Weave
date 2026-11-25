@@ -1,5 +1,7 @@
 Import("ENV")
 
+compact_flag = "-Oz" if ENV["IS_BASE_FIRMWARE"] else "-Os"
+
 
 if ENV["DEBUG"]:
     ENV.Append(
@@ -8,7 +10,7 @@ if ENV["DEBUG"]:
             "NDEBUG",
         ],
         CCFLAGS=[
-            "-Os" if ENV["COMPACT"] else "-Og",
+            compact_flag if ENV["COMPACT"] else "-Og",
         ],
     )
 elif ENV["COMPACT"]:
@@ -18,7 +20,7 @@ elif ENV["COMPACT"]:
             "NDEBUG",
         ],
         CCFLAGS=[
-            "-Os",
+            compact_flag,
         ],
     )
 else:

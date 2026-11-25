@@ -57,16 +57,16 @@ Build outputs appear directly in `build/`. `clean` (or `clear`) restores the sou
 
 ## 🧑‍💻 Developer API
 
-Weave provides a native C networking API for Flipper Zero `.fap` applications through USB/BLE and a connected Android/Desktop companion.
+Weave provides native C networking, USB, security and permission APIs for Flipper Zero `.fap` applications. Networking uses USB/BLE and a connected Android/Desktop companion.
 
-**SDK:** [`weave.h`](firmware/applications/services/weave/weave.h)  
-**Include:** `#include <weave/weave.h>`  
-**Version:** `WEAVE_API_VERSION=3`  
-**Service:** `furi_record_open(RECORD_WEAVE)`
+**SDK:** [`weave.h`](firmware/applications/services/weave/weave.h), [`weave_usb.h`](firmware/applications/services/weave/weave_usb.h), [`weave_security.h`](firmware/applications/services/weave/weave_security.h), [`weave_permissions.h`](firmware/applications/services/weave/weave_permissions.h)  
+**Include:** `#include <weave/weave.h>` (or the corresponding header under `weave/`)  
+**Version:** `WEAVE_API_VERSION=3`, `WEAVE_SECURITY_API_VERSION=3`, `WEAVE_USB_API_VERSION=1`, `WEAVE_PERMISSIONS_API_VERSION=1`  
+**Service:** `furi_record_open(RECORD_WEAVE)` (network API only)
 
 ### API Reference
 
-All functions implicitly take `Weave* weave` as their first argument.
+Networking functions implicitly take `Weave* weave` as their first argument. USB, security and permission functions take only the arguments listed below.
 
 | Function | Arguments | Return |
 |---|---|---|
@@ -86,6 +86,52 @@ All functions implicitly take `Weave* weave` as their first argument.
 | `weave_socket_subscribe_events` | `event_cb, ctx` | `bool` |
 | `weave_socket_unsubscribe_events` | `event_cb, ctx` | `void` |
 | `weave_context_release` | `ctx, timeout_ms` | `bool` |
+| `weave_usb_acquire_ex` | `owner, mode, hid_report_descriptor, hid_descriptor_size, report_size` | `WeaveUsbResult` |
+| `weave_usb_acquire` | `owner, mode` | `WeaveUsbResult` |
+| `weave_usb_release` | `owner` | `WeaveUsbResult` |
+| `weave_usb_receive` | `owner, channel, buffer, capacity, size` | `WeaveUsbResult` |
+| `weave_usb_transmit` | `owner, channel, buffer, size` | `WeaveUsbResult` |
+| `weave_usb_ccid_notify` | `owner, present` | `WeaveUsbResult` |
+| `weave_usb_connected` | `owner` | `bool` |
+| `weave_usb_cdc_available` | — | `bool` |
+| `weave_security_random` | `out, size` | `bool` |
+| `weave_security_wipe` | `data, size` | `void` |
+| `weave_security_equal` | `a, b, size` | `bool` |
+| `weave_security_sha256` | `data, size, out` | `bool` |
+| `weave_security_hmac_sha256` | `key, key_len, data, size, out` | `bool` |
+| `weave_security_hkdf_sha256` | `key, key_size, salt, salt_size, info, info_size, out, out_size` | `bool` |
+| `weave_security_pbkdf2_sha256` | `password, password_size, salt, salt_size, iterations, out, out_size` | `bool` |
+| `weave_security_aead_encrypt` | `key, nonce, aad, aad_size, plaintext, size, ciphertext, tag` | `bool` |
+| `weave_security_aead_decrypt` | `key, nonce, aad, aad_size, ciphertext, size, tag, plaintext` | `bool` |
+| `weave_security_digest_size` | `digest` | `size_t` |
+| `weave_security_digest` | `digest, data, size, out, out_size` | `bool` |
+| `weave_security_hmac` | `digest, key, key_size, data, size, out, out_size` | `bool` |
+| `weave_security_aes_cbc` | `encrypt, key, key_size, iv, input, size, output, output_size` | `bool` |
+| `weave_security_aes_ecb` | `encrypt, key, key_size, input, output` | `bool` |
+| `weave_security_ec_generate` | `curve, private_key, private_size, public_key, public_size` | `bool` |
+| `weave_security_ec_public` | `curve, private_key, private_size, public_key, public_size` | `bool` |
+| `weave_security_ecdsa_sign` | `curve, private_key, private_size, hash, hash_size, signature, signature_size` | `bool` |
+| `weave_security_ecdsa_verify` | `curve, public_key, public_size, hash, hash_size, signature, signature_size` | `bool` |
+| `weave_security_ecdh` | `curve, private_key, private_size, peer_key, peer_size, secret, secret_size` | `bool` |
+| `weave_security_rsa_generate` | `bits, private_key, private_size, public_key, public_size` | `bool` |
+| `weave_security_rsa_public` | `private_key, private_size, public_key, public_size` | `bool` |
+| `weave_security_rsa_sign` | `pss, digest, private_key, private_size, hash, hash_size, signature, signature_size` | `bool` |
+| `weave_security_rsa_verify` | `pss, digest, public_key, public_size, hash, hash_size, signature, signature_size` | `bool` |
+| `weave_security_rsa_private_block` | `private_key, private_size, input, input_size, output, output_size` | `bool` |
+| `weave_security_rsa_oaep_encrypt` | `public_key, public_size, label, label_size, input, input_size, output, output_size` | `bool` |
+| `weave_security_rsa_oaep_decrypt` | `private_key, private_size, label, label_size, input, input_size, output, output_capacity, output_size` | `bool` |
+| `weave_security_ed25519_generate` | `seed, seed_size, public_key, public_size` | `bool` |
+| `weave_security_ed25519_public` | `seed, seed_size, public_key, public_size` | `bool` |
+| `weave_security_ed25519_sign` | `seed, seed_size, message, message_size, signature, signature_size` | `bool` |
+| `weave_security_ed25519_verify` | `public_key, public_size, message, message_size, signature, signature_size` | `bool` |
+| `weave_security_ed25519ph_sign` | `seed, seed_size, digest, digest_size, signature, signature_size` | `bool` |
+| `weave_security_ed25519ph_verify` | `public_key, public_size, digest, digest_size, signature, signature_size` | `bool` |
+| `weave_secret_store` | `namespace_id, name, password, password_size, value, value_size` | `WeaveSecurityResult` |
+| `weave_secret_load` | `namespace_id, name, password, password_size, output, capacity, output_size` | `WeaveSecurityResult` |
+| `weave_secret_delete` | `namespace_id, name` | `WeaveSecurityResult` |
+| `weave_permission_check` | `capability` | `bool` |
+| `weave_permission_has` | `capability` | `bool` |
+| `weave_permission_revoke_self` | — | `void` |
 
 **Callbacks:** `cb` receives `WeaveResponse*`, `event_cb` receives `WeaveSocketEvent*`, and `ctx` is the application's context pointer. HTTP/socket functions return a submission status; asynchronous results arrive through callbacks. Socket OPEN returns its session ID through `response->http_status`.
 

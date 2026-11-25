@@ -16,6 +16,8 @@
 
 typedef enum {
     UsbApiEventTypeSetConfig,
+    UsbApiEventTypeAcquireConfig,
+    UsbApiEventTypeReleaseConfig,
     UsbApiEventTypeGetConfig,
     UsbApiEventTypeLock,
     UsbApiEventTypeUnlock,
@@ -36,9 +38,16 @@ typedef struct {
     void* context;
 } UsbApiEventDataInterface;
 
+typedef struct {
+    FuriHalUsbInterface* expected;
+    FuriHalUsbInterface* desired;
+    void* context;
+} UsbApiEventDataLease;
+
 typedef union {
     UsbApiEventDataStateCallback state_callback;
     UsbApiEventDataInterface interface;
+    UsbApiEventDataLease lease;
 } UsbApiEventData;
 
 typedef union {
@@ -150,6 +159,32 @@ bool furi_hal_usb_set_config(FuriHalUsbInterface* new_if, void* ctx) {
 
     furi_hal_usb_send_message(&msg);
     return return_data.bool_value;
+}
+
+bool furi_hal_usb_acquire_config(
+    FuriHalUsbInterface* expected, FuriHalUsbInterface* requested, void* ctx) {
+    UsbApiEventReturnData result = {.bool_value = false};
+    UsbApiEventMessage msg = {
+        .lock = api_lock_alloc_locked(),
+        .type = UsbApiEventTypeAcquireConfig,
+        .data.lease = {.expected = expected, .desired = requested, .context = ctx},
+        .return_data = &result,
+    };
+    furi_hal_usb_send_message(&msg);
+    return result.bool_value;
+}
+
+bool furi_hal_usb_release_config(
+    FuriHalUsbInterface* owned, FuriHalUsbInterface* previous) {
+    UsbApiEventReturnData result = {.bool_value = false};
+    UsbApiEventMessage msg = {
+        .lock = api_lock_alloc_locked(),
+        .type = UsbApiEventTypeReleaseConfig,
+        .data.lease = {.expected = owned, .desired = previous},
+        .return_data = &result,
+    };
+    furi_hal_usb_send_message(&msg);
+    return result.bool_value;
 }
 
 FuriHalUsbInterface* furi_hal_usb_get_config(void) {
@@ -405,6 +440,25 @@ static void usb_process_message(UsbApiEventMessage* message) {
     case UsbApiEventTypeSetConfig:
         message->return_data->bool_value = usb_process_set_config(
             message->data.interface.interface, message->data.interface.context);
+        break;
+    case UsbApiEventTypeAcquireConfig:
+        message->return_data->bool_value = false;
+        if(!usb.mode_lock && usb.interface == message->data.lease.expected &&
+           message->data.lease.desired) {
+            usb_process_mode_change(
+                message->data.lease.desired, message->data.lease.context);
+            usb.mode_lock = true;
+            message->return_data->bool_value = true;
+        }
+        break;
+    case UsbApiEventTypeReleaseConfig:
+        message->return_data->bool_value = false;
+        if(usb.mode_lock && usb.interface == message->data.lease.expected &&
+           message->data.lease.desired) {
+            usb.mode_lock = false;
+            usb_process_mode_change(message->data.lease.desired, NULL);
+            message->return_data->bool_value = true;
+        }
         break;
     case UsbApiEventTypeGetConfig:
         message->return_data->void_value = usb.interface;

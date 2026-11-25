@@ -20,7 +20,7 @@ appenv.Replace(
     LINKER_SCRIPT_PATH=appenv["APP_LINKER_SCRIPT_PATH"],
 )
 
-appenv["CCFLAGS"] = [flag for flag in appenv["CCFLAGS"] if flag not in ("-Og", "-Os")]
+appenv["CCFLAGS"] = [flag for flag in appenv["CCFLAGS"] if flag not in ("-Og", "-Os", "-Oz")]
 
 appenv.AppendUnique(
     CCFLAGS=[
@@ -31,6 +31,8 @@ appenv.AppendUnique(
         "-nostdlib",
     ],
     LINKFLAGS=[
+        # FAPs must link ordinary machine code from any fat LTO archives.
+        "-fno-lto",
         "-Ur",
         "-Wl,-Ur",
         "-nostartfiles",

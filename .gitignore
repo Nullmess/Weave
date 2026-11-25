@@ -103,3 +103,4 @@ apps/desktop/node_modules/
 /firmware/lib/stm32wb_cmsis
 /firmware/lib/stm32wb_hal
 /firmware/lib/stm32wb_copro
+/firmware/lib/monocypher-4.0.3

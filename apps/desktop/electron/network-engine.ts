@@ -13,7 +13,7 @@ export type NetworkOperation={id:string;verb:string;target:string;data:Uint8Arra
 export type NetworkResult={status:number;code:number;data:Uint8Array};
 const respond=(status=0,code=0,data:Uint8Array=new Uint8Array()):NetworkResult=>({status,code,data});
 const ASCII_HOST=/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i;
-const validHost=(host:string)=>ASCII_HOST.test(host)&&!host.includes('..');
+const validHost=(host:string)=>net.isIP(host.replace(/^\[|\]$/g,''))!==0 || (ASCII_HOST.test(host)&&!host.includes('..'));
 type Session={kind:'TCP'|'UDP'|'WS';socket:net.Socket|dgram.Socket|WebSocket;queue:Buffer[];
     queued:number;dead:boolean;last:number;watch:boolean};
 export class NetworkEngine {
@@ -27,11 +27,15 @@ export class NetworkEngine {
         return u;
     }
     private endpoint(target:string):{host:string;port:number}{
-        const match=/^([^:/\s|]+):([0-9]{1,5})$/.exec(target);
-        if(!match||!validHost(match[1]))throw Error('Invalid endpoint');
-        const port=Number(match[2]);
+        /* Brackets are mandatory for IPv6 so that the port is unambiguous. */
+        const match=/^(?:\[([^\]\s|%]+)\]|([^:/\s|]+)):([0-9]{1,5})$/.exec(target);
+        if(!match)throw Error('Invalid endpoint');
+        const host=match[1]??match[2];
+        if(match[1] ? net.isIP(host)!==6 : !validHost(host))
+            throw Error('Invalid endpoint');
+        const port=Number(match[3]);
         if(port<1||port>65535)throw Error('Invalid port');
-        return {host:match[1],port};
+        return {host,port};
     }
     private close(id:number){
         const s=this.sessions.get(id);if(!s)return;
@@ -101,7 +105,7 @@ export class NetworkEngine {
             });
         }else if(kind==='UDP'){
             const {host,port}=this.endpoint(target);
-            const socket=dgram.createSocket('udp4');session.socket=socket;
+            const socket=dgram.createSocket(net.isIP(host)===6?'udp6':'udp4');session.socket=socket;
             socket.on('message',packet=>this.enqueue(session,packet));
             socket.on('error',()=>{session.dead=true;});
             await new Promise<void>((resolve,reject)=>{

@@ -44,7 +44,9 @@ env = ENV.Clone(
     FW_LIB_OPTS={
         "Default": {
             "CCFLAGS": [
-                "-Og" if (ENV["LIB_DEBUG"] and not ENV["COMPACT"]) else "-Os",
+                "-Oz" if (fw_build_meta["type"] == "firmware" and ENV["COMPACT"]) else (
+                    "-Og" if (ENV["LIB_DEBUG"] and not ENV["COMPACT"]) else "-Os"
+                ),
             ],
             "CPPDEFINES": [
                 "NDEBUG",
@@ -56,7 +58,7 @@ env = ENV.Clone(
         # furi_check doit respecter le mode build
         "furi": {
             "CCFLAGS": [
-                "-Os",
+                "-Oz" if (fw_build_meta["type"] == "firmware" and ENV["COMPACT"]) else "-Os",
             ],
             "CPPDEFINES": [
                 "NDEBUG",
@@ -65,7 +67,7 @@ env = ENV.Clone(
         },
         "flipper_application": {
             "CCFLAGS": [
-                "-Og",
+                "-Oz" if (fw_build_meta["type"] == "firmware" and ENV["COMPACT"]) else "-Og",
             ],
             "CPPDEFINES": [
                 "NDEBUG",
@@ -215,6 +217,13 @@ sources.extend(
 
 
 
+
+# Enable size-oriented LTO for the built-in application/service objects only
+# after the separate FAP environment and its SDK flags have been constructed.
+# Low-level HAL, RTOS and timing-critical libraries keep their normal flags.
+if fwenv["IS_BASE_FIRMWARE"] and fwenv["COMPACT"]:
+    fwenv.AppendUnique(CCFLAGS=["-flto"])
+    fwenv.AppendUnique(LINKFLAGS=["-Oz", "-flto"])
 
 fwelf = fwenv["FW_ELF"] = fwenv.Program(
     "${FIRMWARE_BUILD_CFG}",

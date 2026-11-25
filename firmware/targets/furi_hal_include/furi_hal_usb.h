@@ -42,6 +42,16 @@ void furi_hal_usb_init(void);
 /* Retour true si changement lancé, false si verrouillé */
 bool furi_hal_usb_set_config(FuriHalUsbInterface* new_if, void* ctx);
 
+/* Atomically switch mode and lock it in the USB worker. The expected mode
+ * protects against a competing USB client between read and acquisition.
+ * Returns false if USB is locked or no longer in the expected mode. */
+bool furi_hal_usb_acquire_config(
+    FuriHalUsbInterface* expected, FuriHalUsbInterface* requested, void* ctx);
+/* Atomically restore the previous mode and unlock; only succeeds if the
+ * currently active mode is the one this lease installed. */
+bool furi_hal_usb_release_config(
+    FuriHalUsbInterface* owned, FuriHalUsbInterface* previous);
+
 FuriHalUsbInterface* furi_hal_usb_get_config(void);
 
 void furi_hal_usb_lock(void);

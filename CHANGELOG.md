@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2]
+
+- Generic USB HID and CCID APIs.
+- Extended cryptography and encrypted secret storage.
+- Application permissions and IPv6 support.
+- Firmware memory optimizations.
+
 ## [1.0.1]
 
 - Networking API v3: HTTPS headers and file uploads.

@@ -24,6 +24,18 @@ env.Append(
 libenv = env.Clone(FW_LIB_NAME="mbedtls")
 libenv.ApplyLibFlags()
 
+# Compact main firmware only; keep ordinary object code available for non-LTO users.
+if env["IS_BASE_FIRMWARE"] and env["COMPACT"]:
+    libenv.AppendUnique(CCFLAGS=["-flto", "-ffat-lto-objects"])
+    libenv.Replace(
+        AR=libenv.subst("${TOOLCHAIN_PREFIX}gcc-ar"),
+        RANLIB=libenv.subst("${TOOLCHAIN_PREFIX}gcc-ranlib"),
+        # GCC 12 gcc-ar treats a leading @response-file as an operation.
+        # Pass the operation, archive and object paths directly for LTO archives.
+        ARCOM="$AR $ARFLAGS $TARGET $SOURCES",
+    )
+
+
 libenv.AppendUnique(
     CCFLAGS=[
         # Nécessaire au linkage des FAP
@@ -39,6 +51,17 @@ libenv.AppendUnique(
 
 sources = [
     File("mbedtls/library/aes.c"),
+    File("mbedtls/library/gcm.c"),
+    File("mbedtls/library/sha512.c"),
+    File("mbedtls/library/ecdh.c"),
+    File("mbedtls/library/rsa.c"),
+    File("mbedtls/library/rsa_alt_helpers.c"),
+    File("mbedtls/library/oid.c"),
+    File("mbedtls/library/asn1parse.c"),
+    File("mbedtls/library/asn1write.c"),
+    File("mbedtls/library/cipher.c"),
+    File("mbedtls/library/cipher_wrap.c"),
+    File("mbedtls/library/constant_time.c"),
     File("mbedtls/library/bignum.c"),
     File("mbedtls/library/bignum_core.c"),
     File("mbedtls/library/ecdsa.c"),

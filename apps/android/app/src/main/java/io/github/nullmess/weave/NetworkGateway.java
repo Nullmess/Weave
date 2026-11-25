@@ -7,6 +7,7 @@ import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
@@ -74,7 +75,15 @@ final class NetworkGateway {
         String protocol=u.getProtocol();
         if(!protocol.equals("http")&&!protocol.equals("https"))
             throw new IllegalArgumentException("Unsupported scheme");
-        permitted(u.getHost());
+        String host=u.getHost();
+        if(host.startsWith("[")&&host.endsWith("]")) {
+            String literal=host.substring(1,host.length()-1);
+            if(!literal.matches("[0-9a-fA-F:.]+"))
+                throw new IllegalArgumentException("Invalid IPv6 host");
+            try {if(InetAddress.getByName(literal).getAddress().length!=16)
+                throw new IllegalArgumentException("Invalid IPv6 host");}
+            catch(IOException e){throw new IllegalArgumentException("Invalid IPv6 host",e);}
+        } else permitted(host);
         return u;
     }
     private static Socket connect(String host,int port,boolean tls) throws IOException {
@@ -215,13 +224,29 @@ final class NetworkGateway {
         }
     }
     private static String[] endpoint(String target){
-        String[] parts=target.split(":",-1);
-        if(parts.length!=2||!parts[0].matches("[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}"))
-            throw new IllegalArgumentException("Invalid endpoint");
-        int port;
-        try{port=Integer.parseInt(parts[1]);}catch(NumberFormatException e){throw new IllegalArgumentException("Port");}
+        /* Keep the WN2 target compatible: host:port or [IPv6]:port. */
+        String host,portText;
+        if(target.startsWith("[")) {
+            int end=target.indexOf(']');
+            if(end<2||end+1>=target.length()||target.charAt(end+1)!=':')
+                throw new IllegalArgumentException("Invalid IPv6 endpoint");
+            host=target.substring(1,end);portText=target.substring(end+2);
+            if(!host.contains(":")||!host.matches("[0-9a-fA-F:.]+"))
+                throw new IllegalArgumentException("Invalid IPv6 address");
+            try {if(InetAddress.getByName(host).getAddress().length!=16)
+                throw new IllegalArgumentException("Invalid IPv6 address");}
+            catch(IOException e){throw new IllegalArgumentException("Invalid IPv6 address",e);}
+        } else {
+            int colon=target.indexOf(':');
+            if(colon<1||colon!=target.lastIndexOf(':'))
+                throw new IllegalArgumentException("Invalid endpoint");
+            host=target.substring(0,colon);portText=target.substring(colon+1);
+            permitted(host);
+        }
+        if(!portText.matches("[0-9]{1,5}"))throw new IllegalArgumentException("Port");
+        int port=Integer.parseInt(portText);
         if(port<1||port>65535)throw new IllegalArgumentException("Port");
-        permitted(parts[0]);return parts;
+        return new String[]{host,Integer.toString(port)};
     }
     private static int store(Session s){
         long now=System.currentTimeMillis();

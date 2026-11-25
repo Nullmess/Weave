@@ -42,7 +42,10 @@ typedef struct {
 struct Weave {
     FuriMutex* mutex;
     WeaveTransport transport;
-    WeaveOperation queue[WEAVE_QUEUE_MAX];
+    /* Keep the network request buffer out of RAM while idle. NFC is a large
+     * external FAP and must be able to preload without an unused ~5 KiB FIFO
+     * permanently occupying the heap. Allocations are protected by mutex. */
+    WeaveOperation* queue;
     uint8_t queue_count;
     WeaveTransportListener listeners[4];
     WeaveSocketEventListener socket_listeners[4];
@@ -56,6 +59,9 @@ struct Weave {
 };
 
 void weave_reset(Weave* weave);
+/* Internal helpers; call only while holding weave->mutex. */
+bool weave_queue_reserve_locked(Weave* weave);
+void weave_queue_release_if_idle_locked(Weave* weave);
 void weave_callback_started_locked(Weave* weave, void* context);
 void weave_callback_finished(Weave* weave, void* context);
 void weave_gateway_attach(Weave* weave, WeaveTransport transport);

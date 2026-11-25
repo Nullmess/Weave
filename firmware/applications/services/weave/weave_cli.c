@@ -59,7 +59,7 @@ static void	weave_cli(PipeSide *pipe, FuriString *args, void *context)
 	transport = weave->transport;
 	pending = weave->queue_count != 0;
 	furi_mutex_release(weave->mutex);
-	printf("Weave 1.0.1\r\nGateway: %s\r\n",
+	printf("Weave 1.0.2\r\nGateway: %s\r\n",
 		weave_transport_name(transport));
 	printf("Request: %s\r\n", weave_request_name(pending));
 }
@@ -157,8 +157,10 @@ static void weave_factory_restore_faps(void) {
 
 #include "weave_ringtone.h"
 
-extern void weave_ble_cli_init(void);
 extern void weave_network_mailbox_init(Weave* weave);
+extern void weave_usb_broker_init(void);
+extern void weave_security_init(void);
+extern void weave_permissions_init(void);
 
 int32_t	weave_on_system_start(void *context)
 {
@@ -174,6 +176,9 @@ int32_t	weave_on_system_start(void *context)
 	memset(weave, 0, sizeof(Weave));
 	weave->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
 	furi_check(weave->mutex);
+	weave_usb_broker_init();
+	weave_security_init();
+	weave_permissions_init();
 	furi_record_create(RECORD_WEAVE, weave);
 	cli = furi_record_open(RECORD_CLI);
 	cli_registry_add_command(cli, "weave", CliCommandFlagParallelSafe,
@@ -181,7 +186,6 @@ int32_t	weave_on_system_start(void *context)
 	furi_record_close(RECORD_CLI);
 	/* The ringtone worker also serves the alarm and Find my Flipper RPC. */
 	weave_ringtone_init();
-	weave_ble_cli_init();
 	weave_network_mailbox_init(weave);
 	FURI_LOG_I(TAG, "Service ready");
 	return (0);

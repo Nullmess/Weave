@@ -19,6 +19,7 @@ libs = env.BuildModules(
         "print",
         "microtar",
         "mbedtls",
+        "monocypher",
         "toolbox",
         "libusb_stm32",
         "drivers",

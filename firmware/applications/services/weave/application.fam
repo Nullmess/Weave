@@ -5,5 +5,5 @@ App(
     entry_point="weave_on_system_start",
     requires=["cli", "storage"],
     order=95,
-    sdk_headers=["weave.h"],
+    sdk_headers=["weave.h", "weave_usb.h", "weave_security.h", "weave_permissions.h"],
 )
