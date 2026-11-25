@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <furi/core/memmgr_heap.h>
 
 static void weave_cleanup_reply(const WeaveResponse* response, void* context) {
     (void)response;
@@ -13,7 +14,12 @@ static void weave_cleanup_reply(const WeaveResponse* response, void* context) {
 
 bool weave_queue_reserve_locked(Weave* weave) {
     if(weave->queue) return true;
-    WeaveOperation* queue = malloc(WEAVE_QUEUE_MAX * sizeof(WeaveOperation));
+    const size_t size = WEAVE_QUEUE_MAX * sizeof(WeaveOperation);
+    const int32_t lock = furi_kernel_lock();
+    WeaveOperation* queue = NULL;
+    if(memmgr_heap_get_max_free_block() >= size + 1024U)
+        queue = malloc(size);
+    if(lock == 0) furi_kernel_unlock();
     if(!queue) return false;
     memset(queue, 0, WEAVE_QUEUE_MAX * sizeof(WeaveOperation));
     weave->queue = queue;

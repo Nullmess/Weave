@@ -161,6 +161,8 @@ static void rpc_system_gui_start_screen_stream_process(const PB_Main* request, v
         // GUI framebuffer callback
         gui_add_framebuffer_callback(
             rpc_gui->gui, rpc_system_gui_screen_stream_frame_callback, context);
+        FURI_LOG_I(TAG, "Screen stream active: free=%zu max=%zu", memmgr_get_free_heap(),
+            memmgr_heap_get_max_free_block());
     }
 }
 
@@ -187,6 +189,8 @@ static void rpc_system_gui_stop_screen_stream_process(const PB_Main* request, vo
         pb_release(&PB_Main_msg, rpc_gui->transmit_frame);
         free(rpc_gui->transmit_frame);
         rpc_gui->transmit_frame = NULL;
+        FURI_LOG_I(TAG, "Screen stream stopped: free=%zu max=%zu", memmgr_get_free_heap(),
+            memmgr_heap_get_max_free_block());
     }
 
     rpc_send_and_release_empty(session, request->command_id, PB_CommandStatus_OK);

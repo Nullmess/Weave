@@ -1,7 +1,7 @@
 #include "mf_ultralight_auth.h"
 
 #include <furi.h>
-#include <mbedtls/sha1.h>
+#include <weave/weave_security.h>
 
 MfUltralightAuth* mf_ultralight_auth_alloc(void) {
     MfUltralightAuth* instance = malloc(sizeof(MfUltralightAuth));
@@ -47,7 +47,8 @@ bool mf_ultralight_generate_xiaomi_pass(MfUltralightAuth* instance, uint8_t* uid
     uint8_t hash[20];
     bool generated = false;
     if(uid_len == 7) {
-        mbedtls_sha1(uid, uid_len, hash);
+        if(!weave_security_digest(WeaveDigestSha1, uid, uid_len, hash, sizeof(hash)))
+            return false;
         instance->password.data[0] = (hash[hash[0] % 20]);
         instance->password.data[1] = (hash[(hash[0] + 5) % 20]);
         instance->password.data[2] = (hash[(hash[0] + 13) % 20]);

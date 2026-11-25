@@ -6,6 +6,7 @@
  * One outstanding operation per Flipper; sockets live in the companion.
  */
 #include "weave_i.h"
+#include "weave_ringtone.h"
 #include <storage/storage.h>
 #include <stdio.h>
 #include <string.h>
@@ -443,6 +444,7 @@ static int32_t wn_thread(void* context) {
             weave_gateway_attach(worker.weave,WeaveTransportNone);
         }
         weave_ble_cli_poll(storage);
+        weave_ringtone_reap_idle();
         furi_delay_ms(WN_POLL_MS);
     }
     return 0;

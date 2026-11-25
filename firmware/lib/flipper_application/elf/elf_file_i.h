@@ -21,7 +21,8 @@ struct ELFSection {
 
     size_t rel_count;
     Elf32_Off rel_offset;
-    ELFSection* fast_rel;
+    Elf32_Off fast_rel_offset;
+    Elf32_Word fast_rel_size;
 
     uint16_t sec_idx;
 };

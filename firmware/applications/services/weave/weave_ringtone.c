@@ -29,43 +29,68 @@ static FuriMessageQueue* ring_queue;
 static FuriMessageQueue* alert_requests;
 static FuriMessageQueue* call_stop_requests;
 static FuriMessageQueue* alert_audio_completed;
-/* NFC and other large FAPs must not pay for the audio/overlay threads at boot.
- * Allocate the queues at startup but start these relatively large stacks only
- * when an audible notification or a Find-my-Flipper event is requested. */
+/* Reap idle workers instead of retaining their stacks until reboot. All
+ * producers and the idle transition share one mutex, so no command can be
+ * queued between the final empty-queue check and worker exit. */
+#define WEAVE_AUDIO_IDLE_MS 3000U
 static FuriMutex* weave_audio_start_mutex;
+static FuriThread* weave_audio_thread;
+static FuriThread* weave_alert_thread;
 static bool weave_audio_worker_running;
 static bool weave_alert_worker_running;
 static int32_t weave_ringtone_worker(void* context);
 static int32_t weave_alert_worker(void* context);
+static void weave_ringtone_complete(uint32_t id);
 
-static bool weave_ringtone_ensure_audio_worker(void) {
-    if(!ring_queue || !weave_audio_start_mutex) return false;
-    furi_check(furi_mutex_acquire(weave_audio_start_mutex, FuriWaitForever) == FuriStatusOk);
-    if(!weave_audio_worker_running) {
-        FuriThread* thread = furi_thread_alloc_ex("WeaveRingtone", 4096, weave_ringtone_worker, NULL);
-        if(thread) {
-            weave_audio_worker_running = true;
-            furi_thread_start(thread);
-        }
+static void weave_audio_reap_locked(FuriThread** thread, bool running) {
+    if(*thread && !running) {
+        furi_thread_join(*thread);
+        furi_thread_free(*thread);
+        *thread = NULL;
     }
-    bool ready = weave_audio_worker_running;
-    furi_check(furi_mutex_release(weave_audio_start_mutex) == FuriStatusOk);
+}
+
+void weave_ringtone_reap_idle(void) {
+    if(!weave_audio_start_mutex) return;
+    furi_mutex_acquire(weave_audio_start_mutex, FuriWaitForever);
+    weave_audio_reap_locked(&weave_audio_thread, weave_audio_worker_running);
+    weave_audio_reap_locked(&weave_alert_thread, weave_alert_worker_running);
+    furi_mutex_release(weave_audio_start_mutex);
+}
+
+/* Called with the mutex held. Leave a margin for thread metadata and other
+ * live services; the firmware allocator panics rather than returning NULL. */
+static bool weave_audio_ensure_locked(
+    FuriThread** thread, bool* running, const char* name,
+    uint32_t stack, FuriThreadCallback callback) {
+    if(*running) return true;
+    weave_audio_reap_locked(thread, false);
+    if(memmgr_get_free_heap() < stack + 4096U ||
+       memmgr_heap_get_max_free_block() < stack + 1024U) return false;
+    *thread = furi_thread_alloc_ex(name, stack, callback, NULL);
+    *running = true;
+    furi_thread_start(*thread);
+    return true;
+}
+
+static bool weave_audio_next(FuriMessageQueue* queue, void* item, bool* running) {
+    if(furi_message_queue_get(queue, item, furi_ms_to_ticks(WEAVE_AUDIO_IDLE_MS)) == FuriStatusOk)
+        return true;
+    furi_mutex_acquire(weave_audio_start_mutex, FuriWaitForever);
+    bool ready = furi_message_queue_get(queue, item, 0) == FuriStatusOk;
+    if(!ready) *running = false;
+    furi_mutex_release(weave_audio_start_mutex);
     return ready;
 }
 
-static bool weave_ringtone_ensure_alert_worker(void) {
-    if(!alert_requests || !weave_audio_start_mutex) return false;
-    furi_check(furi_mutex_acquire(weave_audio_start_mutex, FuriWaitForever) == FuriStatusOk);
-    if(!weave_alert_worker_running) {
-        FuriThread* thread = furi_thread_alloc_ex("WeaveAlerts", 2048, weave_alert_worker, NULL);
-        if(thread) {
-            weave_alert_worker_running = true;
-            furi_thread_start(thread);
-        }
-    }
-    bool ready = weave_alert_worker_running;
-    furi_check(furi_mutex_release(weave_audio_start_mutex) == FuriStatusOk);
-    return ready;
+/* Optional buffers must fail gracefully, not trigger the global OOM panic. */
+static void* weave_audio_try_alloc(size_t size) {
+    const int32_t lock = furi_kernel_lock();
+    void* result = NULL;
+    if(memmgr_heap_get_max_free_block() >= size + 1024U &&
+       memmgr_get_free_heap() >= size + 2048U) result = malloc(size);
+    if(lock == 0) furi_kernel_unlock();
+    return result;
 }
 
 static const char* weave_alert_file(WeaveAlertType type) {
@@ -257,24 +282,30 @@ static size_t weave_read_notes(const char* filename, WeaveTone* notes) {
     FuriString* path = furi_string_alloc_printf(RING_DIR "/%s", filename);
     File* file = storage_file_alloc(storage);
     size_t count = 0;
-    char* data = malloc(RING_MAX_TEXT + 1);
-    if(data && storage_file_open(file, furi_string_get_cstr(path), FSAM_READ, FSOM_OPEN_EXISTING)) {
-        size_t length = storage_file_read(file, data, RING_MAX_TEXT);
-        data[length] = '\0';
-        const char* ext = strrchr(filename, '.');
-        if(!strcmp(ext, ".tone")) {
-            for(char* line = data; line && *line && count < RING_MAX_NOTES;) {
-                char* next = strchr(line, '\n');
-                if(next) *next++ = '\0';
-                unsigned hz, ms;
-                if(sscanf(line, "%u %u", &hz, &ms) == 2 &&
-                   hz <= 3500 && ms > 0 && ms <= 5000 && (hz == 0 || hz >= 160)) {
-                    notes[count++] = (WeaveTone){(uint16_t)hz, (uint16_t)ms};
+    char* data = NULL;
+    if(storage_file_open(file, furi_string_get_cstr(path), FSAM_READ, FSOM_OPEN_EXISTING)) {
+        /* Most melodies are small. Allocate the actual file length, capped
+         * at the existing format limit, instead of 16 KiB for every alert. */
+        size_t capacity = MIN(storage_file_size(file), (uint64_t)RING_MAX_TEXT);
+        data = weave_audio_try_alloc(capacity + 1U);
+        size_t length = data ? storage_file_read(file, data, capacity) : 0;
+        if(data) data[length] = '\0';
+        if(data) {
+            const char* ext = strrchr(filename, '.');
+            if(!strcmp(ext, ".tone")) {
+                for(char* line = data; line && *line && count < RING_MAX_NOTES;) {
+                    char* next = strchr(line, '\n');
+                    if(next) *next++ = '\0';
+                    unsigned hz, ms;
+                    if(sscanf(line, "%u %u", &hz, &ms) == 2 &&
+                       hz <= 3500 && ms > 0 && ms <= 5000 && (hz == 0 || hz >= 160)) {
+                        notes[count++] = (WeaveTone){(uint16_t)hz, (uint16_t)ms};
+                    }
+                    line = next;
                 }
-                line = next;
-            }
-        } else if(!strcmp(ext, ".fmf")) count = weave_parse_fmf(data, notes);
-        else count = weave_parse_rtttl(data, notes);
+            } else if(!strcmp(ext, ".fmf")) count = weave_parse_fmf(data, notes);
+            else count = weave_parse_rtttl(data, notes);
+        }
         storage_file_close(file);
     }
     if(data) free(data);
@@ -285,10 +316,19 @@ static size_t weave_read_notes(const char* filename, WeaveTone* notes) {
 }
 
 static void weave_ringtone_send(const WeaveRingCommand* command) {
-    if(!ring_queue) return;
-    if(!weave_ringtone_ensure_audio_worker()) return;
-    furi_message_queue_reset(ring_queue);
-    furi_message_queue_put(ring_queue, command, 0);
+    if(!ring_queue || !weave_audio_start_mutex) return;
+    furi_mutex_acquire(weave_audio_start_mutex, FuriWaitForever);
+    bool ready = weave_audio_worker_running;
+    /* STOP never starts a fresh worker solely to consume a stop command. */
+    if(!ready && !command->stop)
+        ready = weave_audio_ensure_locked(&weave_audio_thread,
+            &weave_audio_worker_running, "WeaveRingtone", 4096, weave_ringtone_worker);
+    if(ready) {
+        furi_message_queue_reset(ring_queue);
+        furi_message_queue_put(ring_queue, command, 0);
+    }
+    furi_mutex_release(weave_audio_start_mutex);
+    if(!ready) weave_ringtone_complete(command->completion_id);
 }
 
 /* Send completion for one-shot phone alerts, not for persistent find/alarm alerts.
@@ -316,20 +356,20 @@ static int32_t weave_ringtone_worker(void* context) {
     static const WeaveTone fallback[] = {
         {880, 220}, {659, 170}, {1046, 220}, {0, 100}, {880, 250},
     };
-    WeaveTone* notes = malloc(sizeof(WeaveTone) * RING_MAX_NOTES);
-    if(!notes) return 0;
     WeaveRingCommand command;
-    for(;;) {
-        if(furi_message_queue_get(ring_queue, &command, FuriWaitForever) != FuriStatusOk) continue;
+    while(weave_audio_next(ring_queue, &command, &weave_audio_worker_running)) {
         if(command.stop) continue;
         bool playing = true;
         uint32_t last_vibration = 0;
         uint32_t started_tick = furi_get_tick();
         while(playing) {
-            size_t count = command.filename[0] ? weave_read_notes(command.filename, notes) : 0;
+            WeaveTone* notes = command.filename[0] ?
+                weave_audio_try_alloc(sizeof(WeaveTone) * RING_MAX_NOTES) : NULL;
+            size_t count = notes ? weave_read_notes(command.filename, notes) : 0;
             const WeaveTone* sequence = count ? notes : fallback;
             if(!count) count = COUNT_OF(fallback);
             if(!furi_hal_speaker_acquire(100)) {
+                free(notes);
                 /* A busy speaker must not silently end a Find alert. Retry,
                  * keep vibration alive and honour STOP while waiting. */
                 if(command.vibro && (!last_vibration ||
@@ -388,6 +428,7 @@ static int32_t weave_ringtone_worker(void* context) {
             }
             furi_hal_speaker_stop();
             furi_hal_speaker_release();
+            free(notes);
             if(!command.repeat && !switched)
                 weave_ringtone_delete_preview(command.filename);
             if(playing && !switched) {
@@ -471,8 +512,7 @@ static void weave_alert_input(InputEvent* event, void* context) {
 static int32_t weave_alert_worker(void* context) {
     UNUSED(context);
     uint8_t type;
-    for(;;) {
-        if(furi_message_queue_get(alert_requests, &type, FuriWaitForever) != FuriStatusOk) continue;
+    while(weave_audio_next(alert_requests, &type, &weave_alert_worker_running)) {
         FuriMessageQueue* events = furi_message_queue_alloc(8, sizeof(InputEvent));
         ViewPort* port = view_port_alloc();
         view_port_draw_callback_set(port, weave_alert_draw, &type);
@@ -532,13 +572,16 @@ static int32_t weave_alert_worker(void* context) {
     return 0;
 }
 void weave_ringtone_notify(WeaveAlertType type) {
-    if(!alert_requests || type > WeaveAlertFinder) return;
-    if(!weave_ringtone_ensure_alert_worker()) return;
+    if(!alert_requests || !weave_audio_start_mutex || type > WeaveAlertFinder) return;
     WeaveAlertSettings settings;
     weave_alert_load(type, &settings);
     if(type != WeaveAlertFinder && !settings.enabled) return;
     uint8_t value = (uint8_t)type;
-    furi_message_queue_put(alert_requests, &value, 0);
+    furi_mutex_acquire(weave_audio_start_mutex, FuriWaitForever);
+    if(weave_audio_ensure_locked(&weave_alert_thread, &weave_alert_worker_running,
+        "WeaveAlerts", 2048, weave_alert_worker))
+        furi_message_queue_put(alert_requests, &value, 0);
+    furi_mutex_release(weave_audio_start_mutex);
 }
 void weave_ringtone_prepare_call(void) {
     if(call_stop_requests) furi_message_queue_reset(call_stop_requests);

@@ -269,9 +269,12 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
 
         if(current_profile_is_serial) {
 
+            FURI_LOG_I(TAG, "BLE RPC before: free=%zu max=%zu", memmgr_get_free_heap(),
+                memmgr_heap_get_max_free_block());
             bt->rpc_session = rpc_session_open(bt->rpc, RpcOwnerBle);
             if(bt->rpc_session) {
-                FURI_LOG_I(TAG, "Open RPC connection");
+                FURI_LOG_I(TAG, "BLE RPC open: free=%zu max=%zu", memmgr_get_free_heap(),
+                    memmgr_heap_get_max_free_block());
                 rpc_session_set_send_bytes_callback(bt->rpc_session, bt_rpc_send_bytes_callback);
                 rpc_session_set_buffer_is_empty_callback(
                     bt->rpc_session, bt_serial_buffer_is_empty_callback);

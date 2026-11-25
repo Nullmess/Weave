@@ -522,7 +522,8 @@ static LoaderMessageLoaderStatusResult loader_start_external_app(
         loader->app.fap = flipper_application_alloc(storage, firmware_api_interface);
         size_t start = furi_get_tick();
 
-        FURI_LOG_I(TAG, "Loading %s", path);
+        FURI_LOG_I(TAG, "Loading %s: free=%zu max=%zu pool=%zu", path,
+            memmgr_get_free_heap(), memmgr_heap_get_max_free_block(), memmgr_pool_get_free());
 
         FlipperApplicationPreloadStatus preload_res =
             flipper_application_preload(loader->app.fap, path);
@@ -544,7 +545,8 @@ static LoaderMessageLoaderStatusResult loader_start_external_app(
             break;
         }
 
-        FURI_LOG_I(TAG, "Loaded in %zums", (size_t)(furi_get_tick() - start));
+        FURI_LOG_I(TAG, "Loaded in %zums: free=%zu max=%zu", (size_t)(furi_get_tick() - start),
+            memmgr_get_free_heap(), memmgr_heap_get_max_free_block());
 
         if(flipper_application_is_plugin(loader->app.fap)) {
             result.value = loader_make_status_error(

@@ -21,6 +21,7 @@ bool weave_alert_load(WeaveAlertType type, WeaveAlertSettings* settings);
 bool weave_alert_save(WeaveAlertType type, const WeaveAlertSettings* settings);
 bool weave_ringtone_valid_filename(const char* name);
 void weave_ringtone_init(void);
+void weave_ringtone_reap_idle(void);
 bool weave_ringtone_has_selection(void);
 void weave_ringtone_start(bool loud, uint32_t duration_ms);
 void weave_ringtone_start_profile(WeaveAlertType type);
