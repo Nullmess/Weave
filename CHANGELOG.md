@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.3]
+
+- Security API v4 and SDK ABI 89.3.
+- Optimized SHA-256, HMAC, HKDF and PBKDF2.
+- Cooperative cryptographic jobs with progress and cancellation.
+- Hardware AES-GCM support and secure resource management.
+- Cryptographic performance, RAM and stack benchmarks.
+- uFBT-compatible SDK packaging and dedicated build command.
+- Automated security, compatibility and firmware validation.
+
 ## [1.0.2]
 
 - Generic USB HID and CCID APIs.

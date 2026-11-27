@@ -1,5 +1,5 @@
 entry,status,name,type,params
-Version,+,89.2,,
+Version,+,89.3,,
 Header,+,applications/drivers/subghz/cc1101_ext/cc1101_ext_interconnect.h,,
 Header,+,applications/services/bt/bt_service/bt.h,,
 Header,+,applications/services/bt/bt_service/bt_keys_storage.h,,
@@ -3909,9 +3909,13 @@ Function,+,weave_secret_delete,WeaveSecurityResult,"const char*, const char*"
 Function,+,weave_secret_load,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, uint8_t*, size_t, size_t*"
 Function,+,weave_secret_store,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, const uint8_t*, size_t"
 Function,+,weave_security_aead_decrypt,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t[16], uint8_t*"
+Function,+,weave_security_aead_decrypt_hw,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t[16], uint8_t*"
 Function,+,weave_security_aead_encrypt,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, uint8_t[16]"
+Function,+,weave_security_aead_encrypt_hw,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, uint8_t[16]"
+Function,+,weave_security_aead_hw_selftest,_Bool,
 Function,+,weave_security_aes_cbc,_Bool,"_Bool, const uint8_t*, size_t, const uint8_t*, const uint8_t*, size_t, uint8_t*, size_t"
 Function,+,weave_security_aes_ecb,_Bool,"_Bool, const uint8_t*, size_t, const uint8_t*, uint8_t*"
+Function,+,weave_security_api_version,uint32_t,
 Function,+,weave_security_digest,_Bool,"WeaveDigest, const uint8_t*, size_t, uint8_t*, size_t"
 Function,+,weave_security_digest_size,size_t,WeaveDigest
 Function,+,weave_security_ec_generate,_Bool,"WeaveCurve, uint8_t*, size_t, uint8_t*, size_t"
@@ -3929,6 +3933,16 @@ Function,+,weave_security_equal,_Bool,"const uint8_t*, const uint8_t*, size_t"
 Function,+,weave_security_hkdf_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
 Function,+,weave_security_hmac,_Bool,"WeaveDigest, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
 Function,+,weave_security_hmac_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t[32]"
+Function,+,weave_security_hmac_sha256_clear,void,WeaveSecurityHmacSha256Context*
+Function,+,weave_security_hmac_sha256_compute,_Bool,"const WeaveSecurityHmacSha256Context*, const uint8_t*, size_t, uint8_t[32]"
+Function,+,weave_security_hmac_sha256_init,_Bool,"WeaveSecurityHmacSha256Context*, const uint8_t*, size_t"
+Function,+,weave_security_job_begin_hmac_sha256,_Bool,"WeaveSecurityJob*, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_job_begin_pbkdf2,_Bool,"WeaveSecurityJob*, const uint8_t*, size_t, const uint8_t*, size_t, uint32_t, size_t"
+Function,+,weave_security_job_begin_sha256,_Bool,"WeaveSecurityJob*, const uint8_t*, size_t"
+Function,+,weave_security_job_cancel,void,WeaveSecurityJob*
+Function,+,weave_security_job_progress,_Bool,"const WeaveSecurityJob*, uint64_t*, uint64_t*"
+Function,+,weave_security_job_result,_Bool,"WeaveSecurityJob*, uint8_t*, size_t"
+Function,+,weave_security_job_step,WeaveSecurityJobState,"WeaveSecurityJob*, uint32_t"
 Function,+,weave_security_pbkdf2_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint32_t, uint8_t*, size_t"
 Function,+,weave_security_random,_Bool,"uint8_t*, size_t"
 Function,+,weave_security_rsa_generate,_Bool,"uint16_t, uint8_t*, size_t, uint8_t*, size_t"

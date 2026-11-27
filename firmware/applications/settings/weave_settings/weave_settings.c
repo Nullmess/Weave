@@ -30,7 +30,7 @@ extern void furi_hal_version_set_custom_name(const char* name);
 
 #define WEAVE_NAME_FILE EXT_PATH(".weave/name")
 #define WEAVE_NAME_DIR EXT_PATH(".weave")
-#define WEAVE_RELEASE "1.0.2"
+#define WEAVE_RELEASE "1.0.3"
 
 typedef enum {
     WeaveSettingsViewMenu,

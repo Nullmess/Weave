@@ -77,7 +77,7 @@ def _publish(firmware_only: bool) -> None:
     built = status.get("built", [])
     if status.get("version") != VERSION or not isinstance(built, list):
         raise RuntimeError("Invalid release status for the current VERSION")
-    required = {"firmware"} if firmware_only else {"firmware", "android", host_platform()}
+    required = {"firmware", "sdk"} if firmware_only else {"firmware", "sdk", "android", host_platform()}
     if not required.issubset(set(built)):
         raise RuntimeError("Missing essential release assets: " + ", ".join(sorted(required - set(built))))
     names = filenames(VERSION)
@@ -156,6 +156,27 @@ def main() -> int:
                 raise RuntimeError("Refusing to clean symlinked build/")
             _remove_path(PUBLIC_BUILD)
         return result
+    if args and args[0] == "sdk":
+        if len(args) != 1:
+            print("Usage: python3 fbt.py sdk", file=sys.stderr)
+            return 2
+        # Use the identical firmware build configuration as release builds.
+        # Preserve existing release assets and keep intermediate build cache.
+        _prepare_build()
+        version = (PROJECT / "VERSION").read_text().strip()
+        dist = WORK / "dist" / "f7-C"
+        (dist / f"weave-f7-sdk-{version}.zip").unlink(missing_ok=True)
+        result = _invoke(["updater_package", "COMPACT=1", "DEBUG=0"])
+        if result:
+            return result
+        sys.path.insert(0, str(FIRMWARE / "site_scons" / "tools"))
+        from release_asset import package_sdk, PackageError
+        try:
+            print(package_sdk(dist, PUBLIC_BUILD, version))
+        except (PackageError, OSError, ValueError, KeyError) as exc:
+            print(f"Weave: SDK not published: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if not args or args[0] != "build":
         return _invoke(args)
     firmware_only = "--firmware-only" in args

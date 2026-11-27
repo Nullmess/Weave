@@ -29,6 +29,7 @@ bool weave_security_digest(
     WeaveDigest digest, const uint8_t* data, size_t size, uint8_t* out, size_t out_size) {
     const mbedtls_md_info_t* info = mbedtls_md_info_from_type(digest_type(digest));
     if(!info || !out || (!data && size) || out_size != mbedtls_md_get_size(info)) return false;
+    if(digest == WeaveDigestSha256) return weave_security_sha256(data, size, out);
     bool ok = mbedtls_md(info, data ? data : empty, size, out) == 0;
     if(!ok) weave_security_wipe(out, out_size);
     return ok;
@@ -40,6 +41,7 @@ bool weave_security_hmac(
     const mbedtls_md_info_t* info = mbedtls_md_info_from_type(digest_type(digest));
     if(!info || !out || (!key && key_size) || (!data && size) ||
        out_size != mbedtls_md_get_size(info)) return false;
+    if(digest == WeaveDigestSha256) return weave_security_hmac_sha256(key, key_size, data, size, out);
     bool ok = mbedtls_md_hmac(info, key ? key : empty, key_size,
                               data ? data : empty, size, out) == 0;
     if(!ok) weave_security_wipe(out, out_size);

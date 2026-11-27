@@ -3,7 +3,7 @@
 
 The firmware is already built by fbt.py. Electron/Vite desktop is bundled
 for supported local OS targets; Android uses a bootstrapped Gradle with Java/SDK. Missing
-prerequisites are reported and a full five-target build returns failure when incomplete.
+prerequisites are reported and a full six-asset build returns failure when incomplete.
 GitHub Actions is a separate, optional manual multi-OS build.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ OUT = BUILD / "releases"
 CACHE_BASE = (Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "Weave" / "cache") \
     if os.name == "nt" else (Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "weave")
 USER_CACHE = Path(os.environ.get("WEAVE_CACHE_HOME", str(CACHE_BASE))).expanduser().resolve()
-KINDS = ("firmware", "android", "windows", "linux", "macos")
+KINDS = ("firmware", "sdk", "android", "windows", "linux", "macos")
 
 
 class ReleaseError(RuntimeError):
@@ -58,7 +58,10 @@ def validate_files(directory: Path, version: str, kinds=KINDS) -> None:
         path = directory / names[kind]
         if not path.is_file() or path.stat().st_size < 1000:
             raise ReleaseError(f"Missing or empty release asset: {path}")
-        if kind in ("windows", "linux", "macos"):
+        if kind == "sdk":
+            from release_asset import validate_sdk
+            validate_sdk(path, version)
+        elif kind in ("windows", "linux", "macos"):
             with zipfile.ZipFile(path) as zf:
                 if not zf.namelist() or zf.testzip():
                     raise ReleaseError(f"Invalid companion ZIP: {path}")
@@ -90,12 +93,13 @@ def validate_files(directory: Path, version: str, kinds=KINDS) -> None:
 
 
 def call_firmware_package() -> None:
-    from release_asset import package_firmware
+    from release_asset import package_firmware, package_sdk
     try:
         package_firmware(BUILD / "dist" / "f7-C", OUT, VERSION)
+        package_sdk(BUILD / "dist" / "f7-C", OUT, VERSION)
     except Exception as exc:
         raise ReleaseError(f"Firmware packaging failed: {exc}") from exc
-    validate_files(OUT, VERSION, ("firmware",))
+    validate_files(OUT, VERSION, ("firmware", "sdk"))
 
 
 def run_checked(command: list[str], cwd: Path) -> None:
@@ -287,7 +291,7 @@ def main() -> int:
         for name in names.values():
             (OUT / name).unlink(missing_ok=True)
         call_firmware_package()
-        built = ["firmware"]
+        built = ["firmware", "sdk"]
         notes: list[str] = []
         if not options.firmware_only:
             # Resolve the SDK/JDK and attempt the APK first: users get any
@@ -308,10 +312,10 @@ def main() -> int:
         if len(built) != len(KINDS):
             print("Weave: remaining native OS builds are available from the manual GitHub Actions workflow.")
             print("Weave: no GH_TOKEN or GitHub repository configuration is required for local builds.")
-        # A five-target build is complete only when all five real native files
+        # A six-asset build is complete only when all six release files
         # have been built. macOS/Windows native bindings require native runners.
         if not options.firmware_only and len(built) != len(KINDS):
-            print('Weave: incomplete five-target build; use the GitHub Actions native runners for missing targets.', file=sys.stderr)
+            print('Weave: incomplete six-asset build; use the GitHub Actions native runners for missing targets.', file=sys.stderr)
             return 1
         # A missing macOS binary is expected on non-macOS hosts, but an APK
         # setup failure must not be reported as a successful full build.

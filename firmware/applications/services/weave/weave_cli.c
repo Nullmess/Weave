@@ -25,6 +25,7 @@
 
 /* API interne au firmware, non exposée aux FAP. */
 extern void furi_hal_version_set_custom_name(const char* name);
+void weave_security_bench(bool full);
 
 static const char	*weave_transport_name(WeaveTransport transport)
 {
@@ -50,16 +51,21 @@ static void	weave_cli(PipeSide *pipe, FuriString *args, void *context)
 
 	weave = context;
 	UNUSED(pipe);
+	if (!furi_string_cmp_str(args, "crypto-bench") ||
+	    !furi_string_cmp_str(args, "crypto-bench full")) {
+		weave_security_bench(!furi_string_cmp_str(args, "crypto-bench full"));
+		return;
+	}
 	if (furi_string_size(args) && furi_string_cmp_str(args, "status"))
 	{
-		puts("Usage: weave [status]");
+		puts("Usage: weave [status | crypto-bench [full]]");
 		return ;
 	}
 	furi_mutex_acquire(weave->mutex, FuriWaitForever);
 	transport = weave->transport;
 	pending = weave->queue_count != 0;
 	furi_mutex_release(weave->mutex);
-	printf("Weave 1.0.2\r\nGateway: %s\r\n",
+	printf("Weave 1.0.3\r\nGateway: %s\r\n",
 		weave_transport_name(transport));
 	printf("Request: %s\r\n", weave_request_name(pending));
 }

@@ -183,7 +183,9 @@ class Main(App):
                 component_path = self._dist_components.get(component_key)
 
                 if component_key.endswith(".dir"):
-                    components_paths[component_key] = basename(component_path)
+                    components_paths[component_key] = (
+                        "scripts" if component_key == "scripts.dir" else basename(component_path)
+                    )
                     for root, dirnames, files in walk(component_path):
                         if "__pycache__" in dirnames:
                             dirnames.remove("__pycache__")

@@ -154,6 +154,12 @@ bool furi_hal_crypto_enclave_verify(uint8_t* keys_nb, uint8_t* valid_keys_nb) {
         return false;
 }
 
+/* Preserve secret erasure across optimized firmware builds. */
+static void crypto_wipe(void* data, size_t size) {
+    volatile uint8_t* p = data;
+    while(size--) *p++ = 0;
+}
+
 bool furi_hal_crypto_enclave_store_key(FuriHalCryptoKey* key, uint8_t* slot) {
     furi_check(key);
     furi_check(slot);
@@ -161,10 +167,11 @@ bool furi_hal_crypto_enclave_store_key(FuriHalCryptoKey* key, uint8_t* slot) {
     furi_check(furi_mutex_acquire(furi_hal_crypto_mutex, FuriWaitForever) == FuriStatusOk);
 
     if(!furi_hal_bt_is_alive()) {
+        furi_check(furi_mutex_release(furi_hal_crypto_mutex) == FuriStatusOk);
         return false;
     }
 
-    SHCI_C2_FUS_StoreUsrKey_Cmd_Param_t pParam;
+    SHCI_C2_FUS_StoreUsrKey_Cmd_Param_t pParam = {0};
     size_t key_data_size = 0;
 
     if(key->type == FuriHalCryptoKeyTypeMaster) {
@@ -191,6 +198,7 @@ bool furi_hal_crypto_enclave_store_key(FuriHalCryptoKey* key, uint8_t* slot) {
     memcpy(pParam.KeyData, key->data, key_data_size);
 
     SHCI_CmdStatus_t shci_state = SHCI_C2_FUS_StoreUsrKey(&pParam, slot);
+    crypto_wipe(&pParam, sizeof(pParam));
     furi_check(furi_mutex_release(furi_hal_crypto_mutex) == FuriStatusOk);
     return shci_state == SHCI_Success;
 }
@@ -252,6 +260,7 @@ static bool crypto_process_block(uint32_t* in, uint32_t* out, uint8_t blk_len) {
     }
 
     memcpy(out, out_temp, blk_len * sizeof(uint32_t));
+    crypto_wipe(out_temp, sizeof(out_temp));
     return true;
 }
 
@@ -261,54 +270,38 @@ bool furi_hal_crypto_enclave_load_key(uint8_t slot, const uint8_t* iv) {
     furi_check(furi_mutex_acquire(furi_hal_crypto_mutex, FuriWaitForever) == FuriStatusOk);
 
     furi_hal_bus_enable(FuriHalBusAES1);
-
-    bool success = false;
-
     furi_hal_bt_lock_core2();
 
-    do {
-        if(!furi_hal_bt_is_alive()) {
-            break;
-        }
-
+    bool success = false;
+    if(furi_hal_bt_is_alive()) {
         furi_hal_crypto_mode_init_done = false;
         crypto_key_init(NULL, (uint32_t*)iv);
-
-        if(SHCI_C2_FUS_LoadUsrKey(slot) == SHCI_Success) {
-            success = true;
-        } else {
-            CLEAR_BIT(AES1->CR, AES_CR_EN);
-            furi_check(furi_mutex_release(furi_hal_crypto_mutex) == FuriStatusOk);
-        }
-
-    } while(false);
-
+        success = SHCI_C2_FUS_LoadUsrKey(slot) == SHCI_Success;
+    }
+    if(!success) {
+        CLEAR_BIT(AES1->CR, AES_CR_EN);
+        furi_hal_bus_disable(FuriHalBusAES1);
+    }
     furi_hal_bt_unlock_core2();
+    /* Success transfers ownership to the matching unload call. All other
+     * paths must release the bus AND mutex, even when Core2 is offline. */
+    if(!success) furi_check(furi_mutex_release(furi_hal_crypto_mutex) == FuriStatusOk);
     return success;
 }
 
 bool furi_hal_crypto_enclave_unload_key(uint8_t slot) {
+    /* Caller owns the mutex from a successful enclave_load_key(). */
     furi_hal_bt_lock_core2();
-
+    CLEAR_BIT(AES1->CR, AES_CR_EN);
     bool success = false;
-
-    do {
-        if(!furi_hal_bt_is_alive()) {
-            break;
-        }
-
-        CLEAR_BIT(AES1->CR, AES_CR_EN);
-
-        SHCI_CmdStatus_t shci_state = SHCI_C2_FUS_UnloadUsrKey(slot);
-
-        furi_hal_bus_disable(FuriHalBusAES1);
-
-        furi_check(furi_mutex_release(furi_hal_crypto_mutex) == FuriStatusOk);
-
-        success = (shci_state == SHCI_Success);
-    } while(false);
-
+    if(furi_hal_bt_is_alive()) {
+        success = SHCI_C2_FUS_UnloadUsrKey(slot) == SHCI_Success;
+    }
+    /* Even if the wireless core stopped or FUS refused the request, reset
+     * AES1 and relinquish its local resources. Report failure to the caller. */
+    furi_hal_bus_disable(FuriHalBusAES1);
     furi_hal_bt_unlock_core2();
+    furi_check(furi_mutex_release(furi_hal_crypto_mutex) == FuriStatusOk);
     return success;
 }
 
@@ -392,7 +385,12 @@ bool furi_hal_crypto_decrypt(const uint8_t* input, uint8_t* output, size_t size)
     return state;
 }
 
-static void crypto_key_init_bswap(uint32_t* key, uint32_t* iv, uint32_t chaining_mode) {
+/* Bytewise reads also support unaligned caller buffers without aliasing UB. */
+static uint32_t crypto_load_be32(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void crypto_key_init_bswap(const uint8_t* key, const uint8_t* iv, uint32_t chaining_mode) {
     CLEAR_BIT(AES1->CR, AES_CR_EN);
     MODIFY_REG(
         AES1->CR,
@@ -400,20 +398,20 @@ static void crypto_key_init_bswap(uint32_t* key, uint32_t* iv, uint32_t chaining
         CRYPTO_DATATYPE_32B | CRYPTO_KEYSIZE_256B | chaining_mode);
 
     if(key != NULL) {
-        AES1->KEYR7 = __builtin_bswap32(key[0]);
-        AES1->KEYR6 = __builtin_bswap32(key[1]);
-        AES1->KEYR5 = __builtin_bswap32(key[2]);
-        AES1->KEYR4 = __builtin_bswap32(key[3]);
-        AES1->KEYR3 = __builtin_bswap32(key[4]);
-        AES1->KEYR2 = __builtin_bswap32(key[5]);
-        AES1->KEYR1 = __builtin_bswap32(key[6]);
-        AES1->KEYR0 = __builtin_bswap32(key[7]);
+        AES1->KEYR7 = crypto_load_be32(key + 0);
+        AES1->KEYR6 = crypto_load_be32(key + 4);
+        AES1->KEYR5 = crypto_load_be32(key + 8);
+        AES1->KEYR4 = crypto_load_be32(key + 12);
+        AES1->KEYR3 = crypto_load_be32(key + 16);
+        AES1->KEYR2 = crypto_load_be32(key + 20);
+        AES1->KEYR1 = crypto_load_be32(key + 24);
+        AES1->KEYR0 = crypto_load_be32(key + 28);
     }
 
-    AES1->IVR3 = __builtin_bswap32(iv[0]);
-    AES1->IVR2 = __builtin_bswap32(iv[1]);
-    AES1->IVR1 = __builtin_bswap32(iv[2]);
-    AES1->IVR0 = __builtin_bswap32(iv[3]);
+    AES1->IVR3 = crypto_load_be32(iv + 0);
+    AES1->IVR2 = crypto_load_be32(iv + 4);
+    AES1->IVR1 = crypto_load_be32(iv + 8);
+    AES1->IVR0 = crypto_load_be32(iv + 12);
 }
 
 static bool
@@ -423,7 +421,7 @@ static bool
 
     furi_hal_bus_enable(FuriHalBusAES1);
 
-    crypto_key_init_bswap((uint32_t*)key, (uint32_t*)iv, chaining_mode);
+    crypto_key_init_bswap(key, iv, chaining_mode);
 
     return true;
 }
@@ -450,6 +448,7 @@ static bool furi_hal_crypto_process_block_bswap(const uint8_t* in, uint8_t* out,
     block[3] = __builtin_bswap32(block[3]);
 
     if(!crypto_process_block(block, block, CRYPTO_BLK_LEN / 4)) {
+        crypto_wipe(block, sizeof(block));
         return false;
     }
 
@@ -459,7 +458,7 @@ static bool furi_hal_crypto_process_block_bswap(const uint8_t* in, uint8_t* out,
     block[3] = __builtin_bswap32(block[3]);
 
     memcpy(out, block, bytes);
-
+    crypto_wipe(block, sizeof(block));
     return true;
 }
 
@@ -473,7 +472,7 @@ static bool furi_hal_crypto_process_block_no_read_bswap(const uint8_t* in, size_
     AES1->DINR = __builtin_bswap32(block[1]);
     AES1->DINR = __builtin_bswap32(block[2]);
     AES1->DINR = __builtin_bswap32(block[3]);
-
+    crypto_wipe(block, sizeof(block));
     return wait_for_crypto();
 }
 
@@ -662,7 +661,7 @@ bool furi_hal_crypto_gcm(
     bool decrypt) {
     /* GCM init phase */
 
-    uint8_t iv_and_counter[CRYPTO_GCM_IV_LEN + CRYPTO_GCM_CTR_LEN];
+    _Alignas(uint32_t) uint8_t iv_and_counter[CRYPTO_GCM_IV_LEN + CRYPTO_GCM_CTR_LEN];
     memcpy(iv_and_counter, iv, CRYPTO_GCM_IV_LEN); //-V1086
     furi_hal_crypto_gcm_prep_iv(iv_and_counter);
 
@@ -733,12 +732,15 @@ FuriHalCryptoGCMState furi_hal_crypto_gcm_decrypt_and_verify(
     uint8_t dtag[CRYPTO_GCM_TAG_LEN];
 
     if(!furi_hal_crypto_gcm(key, iv, aad, aad_length, input, output, length, dtag, true)) {
-        memset(output, 0, length);
+        crypto_wipe(output, length);
+        crypto_wipe(dtag, sizeof(dtag));
         return FuriHalCryptoGCMStateError;
     }
 
-    if(!furi_hal_crypto_gcm_compare_tag(dtag, tag)) {
-        memset(output, 0, length);
+    bool verified = furi_hal_crypto_gcm_compare_tag(dtag, tag);
+    crypto_wipe(dtag, sizeof(dtag));
+    if(!verified) {
+        crypto_wipe(output, length);
         return FuriHalCryptoGCMStateAuthFailure;
     }
 

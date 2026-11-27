@@ -1,5 +1,5 @@
 /** Weave security primitives and password-protected secret vault for FAPs.
- * API v3. All secrets remain on the Flipper; no RPC/companion is involved.
+ * API v4 (additive over v3). All secrets remain on the Flipper; no RPC/companion is involved.
  * Vault keys are scoped to the calling Furi app ID and require consent.
  * User-facing FAPs must collect a sufficiently strong passphrase securely.
  */
@@ -10,7 +10,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define WEAVE_SECURITY_API_VERSION 3U
+#define WEAVE_SECURITY_API_VERSION 4U
 #define WEAVE_SECURITY_KEY_SIZE 32U
 #define WEAVE_SECURITY_SALT_SIZE 16U
 #define WEAVE_SECURITY_NONCE_SIZE 12U
@@ -35,7 +35,21 @@ bool weave_security_equal(const uint8_t* a, const uint8_t* b, size_t size);
 bool weave_security_sha256(const uint8_t* data, size_t size, uint8_t out[32]);
 bool weave_security_hmac_sha256(
     const uint8_t* key, size_t key_len, const uint8_t* data, size_t size, uint8_t out[32]);
-/* RFC 5869 HKDF SHA-256. salt and info may be NULL only if their size is zero. */
+/* Reusable HMAC-SHA256 context (API v4). Key pads are precomputed once.
+ * Context is caller-owned, must not be copied or inspected, and must be cleared
+ * before release. Concurrent compute calls are read-only, provided no thread
+ * initializes or clears this context until all computations have finished. */
+typedef struct {
+    uint32_t inner[8], outer[8];
+    uint32_t ready;
+} WeaveSecurityHmacSha256Context;
+bool weave_security_hmac_sha256_init(WeaveSecurityHmacSha256Context* ctx,
+    const uint8_t* key, size_t key_size);
+bool weave_security_hmac_sha256_compute(const WeaveSecurityHmacSha256Context* ctx,
+    const uint8_t* data, size_t size, uint8_t out[32]);
+void weave_security_hmac_sha256_clear(WeaveSecurityHmacSha256Context* ctx);
+/* RFC 5869 HKDF SHA-256. salt and info may be NULL only if their size is zero.
+ * Output must not overlap any input. */
 bool weave_security_hkdf_sha256(
     const uint8_t* key, size_t key_size, const uint8_t* salt, size_t salt_size,
     const uint8_t* info, size_t info_size, uint8_t* out, size_t out_size);
@@ -43,6 +57,72 @@ bool weave_security_hkdf_sha256(
 bool weave_security_pbkdf2_sha256(
     const uint8_t* password, size_t password_size, const uint8_t* salt,
     size_t salt_size, uint32_t iterations, uint8_t* out, size_t out_size);
+/* API v4: caller-owned, cooperative jobs. No firmware thread or heap allocation.
+ * Initialize with begin, call step with a bounded work budget from the
+ * owning thread, then consume result or cancel. Do not copy or access private
+ * fields. Calls on the same job must be serialized by the application; different
+ * jobs are independent. Do not pass buffers overlapping the job. For zero-length hash jobs total=0;
+ * step still finalizes the hash. Cancellation
+ * occurs between step calls; no secret output until completion. Always consume
+ * or cancel before freeing the storage or unloading a FAP. No IRQ calls.
+ * The job layout is fixed for API v4; use a new type for future extensions. */
+typedef enum {
+    WeaveSecurityJobInvalid = 0,
+    WeaveSecurityJobRunning,
+    WeaveSecurityJobDone,
+    WeaveSecurityJobCancelled,
+} WeaveSecurityJobState;
+typedef struct {
+    uint32_t state[8];
+    uint64_t bytes;
+    uint8_t buffer[64];
+    size_t used;
+} WeaveSecuritySha256State;
+typedef struct {
+    uint32_t inner[8], outer[8], u[8], acc[8];
+    uint8_t salt[64];
+    uint32_t salt_size, iterations, block, round;
+} WeaveSecurityKdfState;
+typedef struct {
+    WeaveSecuritySha256State hash;
+    uint32_t outer[8];
+    const uint8_t* input;
+    size_t size, processed;
+} WeaveSecurityHashJobState;
+typedef enum {
+    WeaveSecurityJobNone = 0,
+    WeaveSecurityJobPbkdf2,
+    WeaveSecurityJobSha256,
+    WeaveSecurityJobHmacSha256,
+} WeaveSecurityJobKind;
+typedef struct {
+    union {
+        WeaveSecurityKdfState kdf;
+        WeaveSecurityHashJobState hash;
+    } work;
+    uint8_t result[64];
+    uint64_t completed, total;
+    uint32_t out_size;
+    WeaveSecurityJobKind kind;
+    WeaveSecurityJobState state;
+} WeaveSecurityJob;
+uint32_t weave_security_api_version(void);
+bool weave_security_job_begin_pbkdf2(
+    WeaveSecurityJob* job, const uint8_t* password, size_t password_size,
+    const uint8_t* salt, size_t salt_size, uint32_t iterations, size_t out_size);
+/* Hash jobs borrow a read-only input buffer until completion/cancellation.
+ * The key is consumed during begin. For digest/HMAC, budget and progress are
+ * measured in bytes; for PBKDF2 they are measured in PRF iterations. */
+bool weave_security_job_begin_sha256(
+    WeaveSecurityJob* job, const uint8_t* data, size_t size);
+bool weave_security_job_begin_hmac_sha256(
+    WeaveSecurityJob* job, const uint8_t* key, size_t key_size,
+    const uint8_t* data, size_t size);
+WeaveSecurityJobState weave_security_job_step(WeaveSecurityJob* job, uint32_t budget);
+bool weave_security_job_progress(const WeaveSecurityJob* job, uint64_t* done, uint64_t* total);
+bool weave_security_job_result(WeaveSecurityJob* job, uint8_t* out, size_t size);
+void weave_security_job_cancel(WeaveSecurityJob* job);
+
 /* AES-256-GCM. Never reuse a nonce with the same key. Plaintext output is
  * wiped on authentication failure; output must not overlap input. */
 bool weave_security_aead_encrypt(
@@ -50,6 +130,20 @@ bool weave_security_aead_encrypt(
     size_t aad_size, const uint8_t* plaintext, size_t size, uint8_t* ciphertext,
     uint8_t tag[16]);
 bool weave_security_aead_decrypt(
+    const uint8_t key[32], const uint8_t nonce[12], const uint8_t* aad,
+    size_t aad_size, const uint8_t* ciphertext, size_t size,
+    const uint8_t tag[16], uint8_t* plaintext);
+/* Explicit AES-256-GCM hardware backend (API v4). Only nonempty whole-block
+ * messages and whole-block AAD up to 65536 bytes each are supported. No silent
+ * fallback or retry after authentication failure. Run the known-answer test
+ * on the target before use. Other lengths use the existing software API.
+ * The HAL serializes access to the AES peripheral. No IRQ calls. */
+bool weave_security_aead_hw_selftest(void);
+bool weave_security_aead_encrypt_hw(
+    const uint8_t key[32], const uint8_t nonce[12], const uint8_t* aad,
+    size_t aad_size, const uint8_t* plaintext, size_t size, uint8_t* ciphertext,
+    uint8_t tag[16]);
+bool weave_security_aead_decrypt_hw(
     const uint8_t key[32], const uint8_t nonce[12], const uint8_t* aad,
     size_t aad_size, const uint8_t* ciphertext, size_t size,
     const uint8_t tag[16], uint8_t* plaintext);

@@ -32,7 +32,7 @@ core_env = Environment(
     UFBT_STATE_DIR=ufbt_state_dir,
     UFBT_CURRENT_SDK_DIR=ufbt_current_sdk_dir,
     UFBT_SCRIPT_DIR=ufbt_script_dir,
-    toolpath=[ufbt_current_sdk_dir.Dir("tools/ufbt/site_tools")],
+    toolpath=[ufbt_current_sdk_dir.Dir("scripts/ufbt/site_tools")],
     tools=[
         "ufbt_state",
         ("ufbt_help", {"vars": ufbt_variables}),

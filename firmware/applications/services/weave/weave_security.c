@@ -3,8 +3,6 @@
 #include <furi.h>
 #include <furi_hal_random.h>
 #include <storage/storage.h>
-#include <mbedtls/sha256.h>
-#include <mbedtls/md.h>
 #include <mbedtls/gcm.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,89 +39,6 @@ bool weave_security_random(uint8_t* out, size_t size) {
     if((!out && size) || size > UINT32_MAX) return false;
     if(size) furi_hal_random_fill_buf(out, (uint32_t)size);
     return true;
-}
-
-bool weave_security_sha256(const uint8_t* data, size_t size, uint8_t out[32]) {
-    if(!out || (!data && size)) return false;
-    return mbedtls_sha256(data ? data : (const uint8_t*)"", size, out, 0) == 0;
-}
-
-bool weave_security_hmac_sha256(
-    const uint8_t* key, size_t key_len, const uint8_t* data, size_t size, uint8_t out[32]) {
-    if(!out || (!key && key_len) || (!data && size)) return false;
-    const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    return md && mbedtls_md_hmac(md, key ? key : (const uint8_t*)"", key_len,
-         data ? data : (const uint8_t*)"", size, out) == 0;
-}
-
-bool weave_security_hkdf_sha256(
-    const uint8_t* key, size_t key_size, const uint8_t* salt, size_t salt_size,
-    const uint8_t* info, size_t info_size, uint8_t* out, size_t out_size) {
-    if(!key || !key_size || (!salt && salt_size) || (!info && info_size) ||
-       (!out && out_size) || out_size > 255U * 32U) return false;
-    uint8_t prk[32], block[32], zero_salt[32] = {0};
-    bool ok = weave_security_hmac_sha256(salt_size ? salt : zero_salt,
-                                        salt_size ? salt_size : sizeof(zero_salt),
-                                        key, key_size, prk);
-    size_t done = 0, last = 0;
-    uint8_t counter = 1;
-    const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    while(ok && done < out_size) {
-        mbedtls_md_context_t ctx;
-        mbedtls_md_init(&ctx);
-        ok = md && mbedtls_md_setup(&ctx, md, 1) == 0 &&
-             mbedtls_md_hmac_starts(&ctx, prk, sizeof(prk)) == 0 &&
-             (!last || mbedtls_md_hmac_update(&ctx, block, last) == 0) &&
-             (!info_size || mbedtls_md_hmac_update(&ctx, info, info_size) == 0) &&
-             mbedtls_md_hmac_update(&ctx, &counter, 1) == 0 &&
-             mbedtls_md_hmac_finish(&ctx, block) == 0;
-        mbedtls_md_free(&ctx);
-        if(ok) {
-            size_t n = out_size - done < 32 ? out_size - done : 32;
-            memcpy(out + done, block, n);
-            done += n;
-            last = 32;
-            ++counter;
-        }
-    }
-    if(!ok && out && out_size) weave_security_wipe(out, out_size);
-    weave_security_wipe(prk, sizeof(prk));
-    weave_security_wipe(block, sizeof(block));
-    return ok;
-}
-
-bool weave_security_pbkdf2_sha256(
-    const uint8_t* password, size_t password_size, const uint8_t* salt,
-    size_t salt_size, uint32_t iterations, uint8_t* out, size_t out_size) {
-    if(!password || !password_size || (!salt && salt_size) || !out || !out_size ||
-       iterations < 10000 || out_size > 64 || salt_size > 64) return false;
-    uint8_t input[68], u[32], t[32];
-    if(salt_size) memcpy(input, salt, salt_size);
-    bool ok = true;
-    size_t done = 0;
-    for(uint32_t index = 1; done < out_size && ok; ++index) {
-        input[salt_size] = (uint8_t)(index >> 24);
-        input[salt_size + 1] = (uint8_t)(index >> 16);
-        input[salt_size + 2] = (uint8_t)(index >> 8);
-        input[salt_size + 3] = (uint8_t)index;
-        ok = weave_security_hmac_sha256(password, password_size, input, salt_size + 4, u);
-        if(!ok) break;
-        memcpy(t, u, 32);
-        for(uint32_t j = 1; j < iterations && ok; ++j) {
-            ok = weave_security_hmac_sha256(password, password_size, u, 32, u);
-            if(ok) for(size_t k = 0; k < 32; ++k) t[k] ^= u[k];
-        }
-        if(ok) {
-            size_t n = out_size - done < 32 ? out_size - done : 32;
-            memcpy(out + done, t, n);
-            done += n;
-        }
-    }
-    if(!ok) weave_security_wipe(out, out_size);
-    weave_security_wipe(input, sizeof(input));
-    weave_security_wipe(u, sizeof(u));
-    weave_security_wipe(t, sizeof(t));
-    return ok;
 }
 
 bool weave_security_aead_encrypt(

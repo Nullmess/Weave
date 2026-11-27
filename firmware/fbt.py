@@ -22,7 +22,7 @@ COMPACT = 1
 DEBUG = 1
 
 # Version firmware
-DIST_SUFFIX = "1.0.2"
+DIST_SUFFIX = "1.0.3"
 
 COPRO_OB_DATA = "site_scons/tools/ob.data"
 
@@ -560,7 +560,7 @@ def repair(args):
     print(f"  qFlipper CLI: {tool or 'not found'}")
     package = find_firmware_package()
     print(f"  Local Weave update: {package if package else 'not built'}")
-    print("  Recovery installs official firmware first, NOT Weave 1.0.2.")
+    print("  Recovery installs official firmware first, NOT Weave 1.0.3.")
     print("  WARNING: recovery may ERASE Flipper internal storage, including")
     print("  settings, Dolphin progress and Bluetooth pairings. microSD is preserved.")
 
@@ -635,7 +635,7 @@ def repair(args):
         return result.returncode
     print("Weave repair: qFlipper CLI exited successfully; verify that the")
     print("Flipper boots normally before attempting any further flash.")
-    print("To restore Weave 1.0.2 after successful recovery:")
+    print("To restore Weave 1.0.3 after successful recovery:")
     print("  python3 fbt.py flash")
     print("Note: a crash caused by Weave source code may recur after reinstalling it.")
     return 0
@@ -687,8 +687,8 @@ def main():
             return 2
         return clean()
     if args and args[0] in ("--help-weave", "--help", "-h", "help"):
-        print("Usage: python3 fbt.py build [--firmware-only] | flash [-p PORT] | region [-p PORT] [--dry-run] | dev | app | doctor [--diagnose] | fix | backup [--output PATH] | restore [--input PATH] [--dry-run] | clean | clear")
-        print("build attempts firmware, APK and native desktop ZIPs; missing platform builds are reported (GitHub Actions builds all five on their native runners).")
+        print("Usage: python3 fbt.py build [--firmware-only] | sdk | flash [-p PORT] | region [-p PORT] [--dry-run] | dev | app | doctor [--diagnose] | fix | backup [--output PATH] | restore [--input PATH] [--dry-run] | clean | clear")
+        print("build attempts firmware, APK and native desktop ZIPs; missing platform builds are reported (GitHub Actions builds all six release assets).")
         return 0
     full_build = bool(args and args[0] == "build")
     firmware_only = full_build and "--firmware-only" in args
