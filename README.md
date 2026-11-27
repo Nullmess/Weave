@@ -34,6 +34,7 @@
 - Optimized cryptography and secure storage.
 - Application permissions and resource management.
 - Native file, app and system management.
+- Android-assisted firmware updates over USB/Bluetooth.
 - Extended device controls and radio features.
 - Companion apps for Android, Windows, Linux and macOS.
 - Developer APIs and uFBT-compatible SDK.
@@ -79,18 +80,88 @@ ufbt update --hw-target=f7 --local=build/Weave-1.0.3-sdk.zip
 
 ## 🧑‍💻 Developer API
 
-| API | Capabilities |
-|---|---|
-| Networking | HTTP/HTTPS, TCP, UDP, WebSocket, file upload, transport detection |
-| USB | HID, CCID, Composite, custom descriptors, data transfer |
-| Hashing | SHA-1, SHA-256, SHA-512, HMAC |
-| Key Derivation | HKDF, PBKDF2, reusable HMAC contexts |
-| Encryption | AES-GCM, AES-CBC, AES-ECB, hardware acceleration |
-| Asymmetric Cryptography | ECC, ECDSA, ECDH, RSA, Ed25519, Ed25519ph |
-| Cryptographic Jobs | Cooperative execution, progress, cancellation |
-| Secure Storage | Encrypted secret storage, retrieval, deletion |
-| Security Utilities | Random generation, secure memory wiping, constant-time comparison |
-| Permissions | Capability verification, permission management |
+SDK headers: [`<weave/weave.h>`](firmware/applications/services/weave/weave.h), [`<weave/weave_usb.h>`](firmware/applications/services/weave/weave_usb.h), [`<weave/weave_security.h>`](firmware/applications/services/weave/weave_security.h), [`<weave/weave_permissions.h>`](firmware/applications/services/weave/weave_permissions.h).
+
+| API | Function | Arguments | Return |
+|---|---|---|---|
+| Networking | `weave_get_transport` | `weave` | `WeaveTransport` |
+| Networking | `weave_transport_subscribe` | `weave, cb, context` | `bool` |
+| Networking | `weave_transport_unsubscribe` | `weave, cb, context` | `void` |
+| Networking | `weave_http_get` | `weave, url, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_http_request` | `weave, method, url, body, length, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_http_request_ex` | `weave, method, url, headers, header_count, body, length, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_http_upload_file_ex` | `weave, method, url, headers, header_count, sd_path, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_http_upload_file` | `weave, method, url, sd_path, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_socket_open` | `weave, type, host_or_wss_url, port, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_socket_send` | `weave, type, session, body, length, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_socket_receive` | `weave, type, session, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_socket_close` | `weave, type, session, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_socket_watch` | `weave, type, session, enabled, cb, ctx` | `WeaveStatus` |
+| Networking | `weave_socket_subscribe_events` | `weave, cb, ctx` | `bool` |
+| Networking | `weave_socket_unsubscribe_events` | `weave, cb, ctx` | `void` |
+| Networking | `weave_context_release` | `weave, context, timeout_ms` | `bool` |
+| USB | `weave_usb_acquire_ex` | `owner, mode, hid_report_descriptor, hid_descriptor_size, report_size` | `WeaveUsbResult` |
+| USB | `weave_usb_acquire` | `owner, mode` | `WeaveUsbResult` |
+| USB | `weave_usb_release` | `owner` | `WeaveUsbResult` |
+| USB | `weave_usb_receive` | `owner, channel, buffer, capacity, size` | `WeaveUsbResult` |
+| USB | `weave_usb_transmit` | `owner, channel, buffer, size` | `WeaveUsbResult` |
+| USB | `weave_usb_ccid_notify` | `owner, present` | `WeaveUsbResult` |
+| USB | `weave_usb_connected` | `owner` | `bool` |
+| USB | `weave_usb_cdc_available` | — | `bool` |
+| Security | `weave_security_random` | `out, size` | `bool` |
+| Security | `weave_security_wipe` | `data, size` | `void` |
+| Security | `weave_security_equal` | `a, b, size` | `bool` |
+| Hashing / HMAC | `weave_security_sha256` | `data, size, out` | `bool` |
+| Hashing / HMAC | `weave_security_hmac_sha256` | `key, key_len, data, size, out` | `bool` |
+| Hashing / HMAC | `weave_security_hmac_sha256_init` | `ctx, key, key_size` | `bool` |
+| Hashing / HMAC | `weave_security_hmac_sha256_compute` | `ctx, data, size, out` | `bool` |
+| Hashing / HMAC | `weave_security_hmac_sha256_clear` | `ctx` | `void` |
+| KDF | `weave_security_hkdf_sha256` | `key, key_size, salt, salt_size, info, info_size, out, out_size` | `bool` |
+| KDF | `weave_security_pbkdf2_sha256` | `password, password_size, salt, salt_size, iterations, out, out_size` | `bool` |
+| Security | `weave_security_api_version` | — | `uint32_t` |
+| Crypto Jobs | `weave_security_job_begin_pbkdf2` | `job, password, password_size, salt, salt_size, iterations, out_size` | `bool` |
+| Crypto Jobs | `weave_security_job_begin_sha256` | `job, data, size` | `bool` |
+| Crypto Jobs | `weave_security_job_begin_hmac_sha256` | `job, key, key_size, data, size` | `bool` |
+| Crypto Jobs | `weave_security_job_step` | `job, budget` | `WeaveSecurityJobState` |
+| Crypto Jobs | `weave_security_job_progress` | `job, done, total` | `bool` |
+| Crypto Jobs | `weave_security_job_result` | `job, out, size` | `bool` |
+| Crypto Jobs | `weave_security_job_cancel` | `job` | `void` |
+| Encryption | `weave_security_aead_encrypt` | `key, nonce, aad, aad_size, plaintext, size, ciphertext, tag` | `bool` |
+| Encryption | `weave_security_aead_decrypt` | `key, nonce, aad, aad_size, ciphertext, size, tag, plaintext` | `bool` |
+| Encryption | `weave_security_aead_hw_selftest` | — | `bool` |
+| Encryption | `weave_security_aead_encrypt_hw` | `key, nonce, aad, aad_size, plaintext, size, ciphertext, tag` | `bool` |
+| Encryption | `weave_security_aead_decrypt_hw` | `key, nonce, aad, aad_size, ciphertext, size, tag, plaintext` | `bool` |
+| Hashing / HMAC | `weave_security_digest_size` | `digest` | `size_t` |
+| Hashing / HMAC | `weave_security_digest` | `digest, data, size, out, out_size` | `bool` |
+| Hashing / HMAC | `weave_security_hmac` | `digest, key, key_size, data, size, out, out_size` | `bool` |
+| Encryption | `weave_security_aes_cbc` | `encrypt, key, key_size, iv, input, size, output, output_size` | `bool` |
+| Encryption | `weave_security_aes_ecb` | `encrypt, key, key_size, input, output` | `bool` |
+| Asymmetric | `weave_security_ec_generate` | `curve, private_key, private_size, public_key, public_size` | `bool` |
+| Asymmetric | `weave_security_ec_public` | `curve, private_key, private_size, public_key, public_size` | `bool` |
+| Asymmetric | `weave_security_ecdsa_sign` | `curve, private_key, private_size, hash, hash_size, signature, signature_size` | `bool` |
+| Asymmetric | `weave_security_ecdsa_verify` | `curve, public_key, public_size, hash, hash_size, signature, signature_size` | `bool` |
+| Asymmetric | `weave_security_ecdh` | `curve, private_key, private_size, peer_key, peer_size, secret, secret_size` | `bool` |
+| Asymmetric | `weave_security_rsa_generate` | `bits, private_key, private_size, public_key, public_size` | `bool` |
+| Asymmetric | `weave_security_rsa_public` | `private_key, private_size, public_key, public_size` | `bool` |
+| Asymmetric | `weave_security_rsa_sign` | `pss, digest, private_key, private_size, hash, hash_size, signature, signature_size` | `bool` |
+| Asymmetric | `weave_security_rsa_verify` | `pss, digest, public_key, public_size, hash, hash_size, signature, signature_size` | `bool` |
+| Asymmetric | `weave_security_rsa_private_block` | `private_key, private_size, input, input_size, output, output_size` | `bool` |
+| Asymmetric | `weave_security_rsa_oaep_encrypt` | `public_key, public_size, label, label_size, input, input_size, output, output_size` | `bool` |
+| Asymmetric | `weave_security_rsa_oaep_decrypt` | `private_key, private_size, label, label_size, input, input_size, output, output_capacity, output_size` | `bool` |
+| Asymmetric | `weave_security_ed25519_generate` | `seed, seed_size, public_key, public_size` | `bool` |
+| Asymmetric | `weave_security_ed25519_public` | `seed, seed_size, public_key, public_size` | `bool` |
+| Asymmetric | `weave_security_ed25519_sign` | `seed, seed_size, message, message_size, signature, signature_size` | `bool` |
+| Asymmetric | `weave_security_ed25519_verify` | `public_key, public_size, message, message_size, signature, signature_size` | `bool` |
+| Asymmetric | `weave_security_ed25519ph_sign` | `seed, seed_size, digest, digest_size, signature, signature_size` | `bool` |
+| Asymmetric | `weave_security_ed25519ph_verify` | `public_key, public_size, digest, digest_size, signature, signature_size` | `bool` |
+| Secure Storage | `weave_secret_store` | `namespace_id, name, password, password_size, value, value_size` | `WeaveSecurityResult` |
+| Secure Storage | `weave_secret_load` | `namespace_id, name, password, password_size, output, capacity, output_size` | `WeaveSecurityResult` |
+| Secure Storage | `weave_secret_delete` | `namespace_id, name` | `WeaveSecurityResult` |
+| Permissions | `weave_permission_check` | `capability` | `bool` |
+| Permissions | `weave_permission_has` | `capability` | `bool` |
+| Permissions | `weave_permission_revoke_self` | — | `void` |
+
+Networking functions use `furi_record_open(RECORD_WEAVE)`; callbacks are asynchronous. Release callback contexts before unloading a FAP. See the linked headers for buffer sizes, permissions and lifecycle rules.
 
 ### Example
 
@@ -100,13 +171,9 @@ ufbt update --hw-target=f7 --local=build/Weave-1.0.3-sdk.zip
 
 int32_t example_app(void* context) {
     UNUSED(context);
-
     uint8_t hash[32];
-
-    if(weave_security_sha256("Hello Weave", 11, hash)) {
+    if(weave_security_sha256((const uint8_t*)"Hello Weave", 11, hash))
         FURI_LOG_I("Example", "SHA-256 computed successfully");
-    }
-
     return 0;
 }
 ```

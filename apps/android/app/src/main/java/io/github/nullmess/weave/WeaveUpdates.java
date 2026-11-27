@@ -21,8 +21,8 @@ final class WeaveUpdates {
     private static final String REPO = "Nullmess/Weave";
     private static final int MAX_JSON = 1_000_000;
     private static final long MAX_ASSET = 250_000_000L;
-    private static JSONObject cachedRelease;
-    private static long cachedAt;
+    private static final JSONObject[] cachedRelease = new JSONObject[2];
+    private static final long[] cachedAt = new long[2];
     static final class AssetPendingException extends IOException {
         final String version;
         AssetPendingException(String version, boolean firmware) {
@@ -33,8 +33,9 @@ final class WeaveUpdates {
 
     static final class Release {
         final String version, name, url, digest;
-        Release(String version, String name, String url, String digest) {
-            this.version = version; this.name = name; this.url = url; this.digest = digest;
+        final long size;
+        Release(String version, String name, String url, String digest, long size) {
+            this.version = version; this.name = name; this.url = url; this.digest = digest; this.size = size;
         }
     }
     interface Progress { void onProgress(int percent); }
@@ -90,31 +91,45 @@ final class WeaveUpdates {
         } finally { connection.disconnect(); }
     }
     static int compare(String current, String latest) {
-        if (current == null || latest == null) return 0;
-        String a = current.replaceFirst("^[vV]", ""), b = latest.replaceFirst("^[vV]", "");
-        if (!a.matches("\\d+\\.\\d+\\.\\d+") || !b.matches("\\d+\\.\\d+\\.\\d+")) return 0;
-        String[] aa = a.split("\\."), bb = b.split("\\.");
-        for (int i=0;i<3;i++) {
-            int cmp = Long.compare(Long.parseLong(aa[i]), Long.parseLong(bb[i]));
-            if (cmp != 0) return cmp;
-        }
-        return 0;
+        return FirmwareUpdatePolicy.compare(current == null ? null : current.replaceFirst("^[vV]", ""),
+                latest == null ? null : latest.replaceFirst("^[vV]", ""));
     }
-    // Both Settings tiles and Flipper's FW check share one short-lived metadata read.
-    // Avoid two simultaneous anonymous GitHub API requests on every refresh.
-    private static synchronized JSONObject latestMetadata() throws Exception {
+    // Cache séparé par canal. Stable par défaut, previews sur opt-in.
+    private static synchronized JSONObject latestMetadata(boolean preview) throws Exception {
         long now = android.os.SystemClock.elapsedRealtime();
-        if (cachedRelease != null && now - cachedAt < 20_000L) return cachedRelease;
-        HttpURLConnection conn = connect("https://api.github.com/repos/" + REPO + "/releases/latest");
-        JSONObject metadata = new JSONObject(new String(read(conn, MAX_JSON, null), StandardCharsets.UTF_8));
-        cachedRelease = metadata;
-        cachedAt = android.os.SystemClock.elapsedRealtime();
+        int channel = preview ? 1 : 0;
+        if (cachedRelease[channel] != null && now - cachedAt[channel] < 20_000L) return cachedRelease[channel];
+        HttpURLConnection conn = connect("https://api.github.com/repos/" + REPO +
+                (preview ? "/releases?per_page=100" : "/releases/latest"));
+        String body = new String(read(conn, MAX_JSON, null), StandardCharsets.UTF_8);
+        JSONObject metadata;
+        if (!preview) metadata = new JSONObject(body);
+        else {
+            JSONArray releases = new JSONArray(body);
+            metadata = null;
+            String best = null;
+            for (int i = 0; i < releases.length(); i++) {
+                JSONObject candidate = releases.optJSONObject(i);
+                if (candidate == null || candidate.optBoolean("draft", false)) continue;
+                String version = candidate.optString("tag_name", "").replaceFirst("^[vV]", "");
+                if (!FirmwareUpdatePolicy.validVersion(version)) continue;
+                int order = best == null ? 1 : compare(version, best);
+                if (order > 0 || (order == 0 && metadata != null && metadata.optBoolean("prerelease", false) &&
+                        !candidate.optBoolean("prerelease", false))) {
+                    best = version;
+                    metadata = candidate;
+                }
+            }
+            if (metadata == null) throw new IOException("No published Weave release found");
+        }
+        cachedRelease[channel] = metadata;
+        cachedAt[channel] = android.os.SystemClock.elapsedRealtime();
         return metadata;
     }
-    static Release latest(boolean firmware) throws Exception {
-        JSONObject release = latestMetadata();
+    static Release latest(boolean firmware, boolean preview) throws Exception {
+        JSONObject release = latestMetadata(preview);
         String version = release.optString("tag_name", "").replaceFirst("^[vV]", "");
-        if (!version.matches("\\d+\\.\\d+\\.\\d+")) throw new IOException("Release version unavailable");
+        if (!FirmwareUpdatePolicy.validVersion(version)) throw new IOException("Release version unavailable");
         JSONArray assets = release.optJSONArray("assets");
         if (assets == null) throw new AssetPendingException(version, firmware);
         for (int i = 0; i < assets.length(); i++) {
@@ -132,7 +147,7 @@ final class WeaveUpdates {
             String digest = asset.optString("digest", "");
             if (!digest.isEmpty() && !digest.matches("sha256:[0-9a-fA-F]{64}"))
                 throw new IOException("Unsupported release checksum");
-            return new Release(version, name, url, digest);
+            return new Release(version, name, url, digest, size);
         }
         throw new AssetPendingException(version, firmware);
     }
@@ -145,23 +160,27 @@ final class WeaveUpdates {
         HttpURLConnection conn = connect(release.url);
         try {
             long declared = conn.getContentLengthLong();
-            if (declared > MAX_ASSET) throw new java.io.IOException("Update exceeds size limit");
+            if (declared > MAX_ASSET || (declared > 0 && declared != release.size))
+                throw new java.io.IOException("Unexpected update download size");
             long count = 0;
             MessageDigest checksum = MessageDigest.getInstance("SHA-256");
             try (InputStream source = conn.getInputStream(); FileOutputStream target = new FileOutputStream(temp)) {
                 byte[] buffer = new byte[32768]; int read;
+                long deadline = android.os.SystemClock.elapsedRealtime() + 600000L;
                 while ((read = source.read(buffer)) != -1) {
+                    if (Thread.currentThread().isInterrupted() || android.os.SystemClock.elapsedRealtime() > deadline)
+                        throw new java.io.IOException("Update download interrupted or timed out");
                     if (read == 0) continue;
                     count += read;
                     if (count > MAX_ASSET) throw new java.io.IOException("Update exceeds size limit");
                     target.write(buffer, 0, read);
                     checksum.update(buffer, 0, read);
-                    if (progress != null && declared > 0)
-                        progress.onProgress((int)Math.min(99, count * 100 / declared));
+                    if (progress != null)
+                        progress.onProgress((int)Math.min(99, count * 100 / release.size));
                 }
                 target.getFD().sync();
             }
-            if (count < 128) throw new IOException("Empty update file");
+            if (count < 128 || count != release.size) throw new IOException("Incomplete update download");
             if (!release.digest.isEmpty()) {
                 StringBuilder hex = new StringBuilder(64);
                 for (byte b : checksum.digest()) hex.append(String.format(Locale.ROOT, "%02x", b & 0xff));

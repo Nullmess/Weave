@@ -84,7 +84,7 @@ final class WeaveFirmwarePackage {
                     throw new IOException("Unexpected firmware archive path");
                 if (directory && size != 0) throw new IOException("Invalid tar directory entry");
                 if (!directory) {
-                    if (files.size() >= MAX_FILES) throw new IOException("Too many firmware files");
+                    if (files.size() >= MAX_FILES || size == 0) throw new IOException("Empty or excessive firmware entries");
                     File target = new File(stage, parts[1]);
                     try (FileOutputStream output = new FileOutputStream(target)) {
                         byte[] buffer = new byte[16384];
@@ -126,6 +126,34 @@ final class WeaveFirmwarePackage {
             for (Member member : files) member.file.delete();
             throw new IOException("Firmware bundle has no update.fuf");
         }
+        // Le manifeste doit référencer uniquement des fichiers du TGZ vérifié,
+        // jamais un ancien fichier laissé sur la SD par un transfert interrompu.
+        try {
+            java.util.Map<String, String> fields = new java.util.HashMap<>();
+            for (String line : java.nio.file.Files.readAllLines(new File(stage, "update.fuf").toPath(),
+                    StandardCharsets.US_ASCII)) {
+                if (line.startsWith("#")) continue;
+                int colon = line.indexOf(':');
+                if (colon <= 0) continue;
+                String key = line.substring(0, colon).trim();
+                if (fields.put(key, line.substring(colon + 1).trim()) != null)
+                    throw new IOException("Duplicate update manifest field");
+            }
+            if (!version.equals(fields.get("Info")) || !"7".equals(fields.get("Target")))
+                throw new IOException("Firmware manifest version or target mismatch");
+            for (String key : new String[]{"Loader", "Firmware", "Radio", "Resources", "Splashscreen"}) {
+                String name = fields.getOrDefault(key, "");
+                if (name.isEmpty() && !"Loader".equals(key) && !"Firmware".equals(key)) continue;
+                if (!name.matches("[A-Za-z0-9_.-]+") || !names.contains(root + "/" + name))
+                    throw new IOException("Missing or invalid manifest member: " + key);
+            }
+        } catch (IOException invalid) {
+            for (Member member : files) member.file.delete();
+            throw invalid;
+        }
+        // Publier le manifeste en dernier. Aucun reboot avant l'ACK de préparation RPC.
+        files.sort((a, b) -> Boolean.compare(a.remotePath.endsWith("/update.fuf"),
+                b.remotePath.endsWith("/update.fuf")));
         return new Prepared(files, "/ext/update/" + root + "/update.fuf", total);
     }
     private static void readFully(InputStream input, byte[] data, int offset, int length) throws IOException {

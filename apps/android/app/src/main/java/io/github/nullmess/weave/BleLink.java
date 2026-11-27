@@ -138,6 +138,19 @@ final class BleLink implements AutoCloseable {
     private final ArrayList<FlipperRpc.Item> fileItems = new ArrayList<>();
     private int fileId;
     private int deviceInfoId;
+    private String deviceUid, deviceFirmwareVersion;
+    private volatile long rpcGeneration;
+    private boolean firmwarePriority;
+    String deviceUid() { return deviceUid; }
+    String deviceFirmwareVersion() { return deviceFirmwareVersion; }
+    void setFirmwarePriority(boolean enabled) {
+        if (firmwarePriority == enabled) return;
+        firmwarePriority = enabled;
+        if (enabled) {
+            stopScreen();
+            setDisplayConnectionPriority(true);
+        } else setDisplayConnectionPriority(false);
+    }
     private int apiMajor = -1, apiMinor = -1;
     private int deviceInfoRetries;
     private boolean firmwareVersionSeen;
@@ -278,7 +291,7 @@ final class BleLink implements AutoCloseable {
     // the restart stuck behind a large list of low-priority requests.
     void recoverScreen() {
         handler.post(() -> {
-            if (!connected || !rpcReady || uploading != null || operationId != 0 ||
+            if (firmwarePriority || !connected || !rpcReady || uploading != null || operationId != 0 ||
                     !context.getSharedPreferences(WeaveService.PREFS, Context.MODE_PRIVATE)
                             .getBoolean("screen_requested", false)) return;
             screenStreamEnabled = true;
@@ -288,7 +301,7 @@ final class BleLink implements AutoCloseable {
     }
 
     private void restartScreenStream() {
-        if (!connected || !rpcReady || !screenStreamEnabled || uploading != null ||
+        if (firmwarePriority || !connected || !rpcReady || !screenStreamEnabled || uploading != null ||
                 operationId != 0) return;
         final long generation = ++screenRestartGeneration;
         screenRestartPending = true;
@@ -430,7 +443,8 @@ final class BleLink implements AutoCloseable {
         lastDevice = device;
         connecting = true;
         try {
-            gatt = device.connectGatt(context, false, gattCallbacks, BluetoothDevice.TRANSPORT_LE);
+            gatt = device.connectGatt(context, false, gattCallbacks, BluetoothDevice.TRANSPORT_LE,
+                    BluetoothDevice.PHY_LE_1M_MASK, handler);
             if (gatt == null) { connecting = false; callbacks.status("Unable to open Flipper GATT"); return; }
             handler.removeCallbacks(connectTimeout);
             handler.postDelayed(connectTimeout, 17000);
@@ -446,7 +460,8 @@ final class BleLink implements AutoCloseable {
 
     @SuppressLint("MissingPermission")
     private boolean prepareUploadRetry(BluetoothGatt source) {
-        if (uploading == null || transferRetried || uploadCancelRequested) return false;
+        if (uploading == null || transferRetried || uploadCancelRequested ||
+                (operationName != null && operationName.startsWith("Firmware "))) return false;
         // Restart from byte 0 after reconnect; partial .fap writes must never be resumed.
         retryTransferBytes = uploading;
         retryTransferPath = uploadTarget;
@@ -763,8 +778,9 @@ final class BleLink implements AutoCloseable {
     boolean isUsbActive() { return usbTransport != null && usbTransport.isReady(); }
 
     void onUsbRpcBytes(byte[] data) {
+        final long generation = rpcGeneration;
         handler.post(() -> {
-            if (isUsbActive() && data != null) acceptRpcBytes(data);
+            if (generation == rpcGeneration && isUsbActive() && data != null) acceptRpcBytes(data);
         });
     }
 
@@ -826,6 +842,7 @@ final class BleLink implements AutoCloseable {
     }
 
     void startScreen() {
+        if (firmwarePriority) return;
         screenStreamEnabled = true;
         if (!connected || !rpcReady || uploading != null || screenSessionActive) return;
         ++screenRestartGeneration; // Cancel a delayed start from an older restart.
@@ -844,7 +861,7 @@ final class BleLink implements AutoCloseable {
         screenRestartPending = false;
         handler.removeCallbacks(screenInputWatchdog);
         handler.removeCallbacks(screenInitialTimeout);
-        setDisplayConnectionPriority(false);
+        if (!firmwarePriority) setDisplayConnectionPriority(false);
         if (!rpcReady || !screenSessionActive) return;
         screenSessionActive = false;
         queueInteractivePacket(FlipperRpc.streamRequest(++commandId, false));
@@ -861,7 +878,8 @@ final class BleLink implements AutoCloseable {
     void inputEvent(int key, int type) {
         if (key < 0 || key > 5 || type < 0 || type > 4) return;
         handler.post(() -> {
-            if (!connected || !rpcReady) return;
+            if (!connected || !rpcReady || (firmwarePriority && type != 1)) return;
+            if (firmwarePriority && (heldInputMask & (1 << key)) == 0) return;
             if (type == 0) heldInputMask |= (1 << key);
             else if (type == 1) heldInputMask &= ~(1 << key);
             // REPEAT est facultatif : ne jamais retarder LONG/RELEASE pour lui.
@@ -1031,7 +1049,8 @@ final class BleLink implements AutoCloseable {
     }
 
     void requestDeviceInfo() {
-        if (!rpcReady || deviceInfoId != 0 || deviceInfoRetries >= 3) return;
+        if (!rpcReady || deviceInfoId != 0 || deviceInfoRetries >= 3 ||
+                (firmwarePriority && deviceUid != null && deviceFirmwareVersion != null)) return;
         deviceInfoRetries++;
         deviceInfoId = ++commandId;
         handler.removeCallbacks(deviceInfoTimeout);
@@ -1132,7 +1151,8 @@ final class BleLink implements AutoCloseable {
         uploadTarget = path;
         operationName = label;
         operationId = ++commandId;
-        uploadTotalFrames = (data.length + UPLOAD_RPC_BYTES - 1) / UPLOAD_RPC_BYTES;
+        int chunkSize = uploadChunkSize();
+        uploadTotalFrames = (data.length + chunkSize - 1) / chunkSize;
         uploadSentFrames = 0;
         uploadNextOffset = 0;
         uploadServerAcked = false;
@@ -1145,7 +1165,7 @@ final class BleLink implements AutoCloseable {
         screenRestartPending = false;
         handler.removeCallbacks(screenInitialTimeout);
         screenSessionActive = false;
-        queuePacket(FlipperRpc.streamRequest(++commandId, false));
+        if (!firmwarePriority) queuePacket(FlipperRpc.streamRequest(++commandId, false));
         handler.postDelayed(operationTimeout, ("Firmware Upload".equals(label) ||
                 NetworkMailbox.RESPONSE.equals(path)) ? 1800000 : 300000);
         // Never enqueue the whole file: generate each frame when the previous one left GATT.
@@ -1163,6 +1183,9 @@ final class BleLink implements AutoCloseable {
         return true;
     }
 
+    private int uploadChunkSize() {
+        return isUsbActive() && "Firmware Upload".equals(operationName) ? 512 : UPLOAD_RPC_BYTES;
+    }
     private void queueNextUploadFrame() {
         if (uploading == null || operationId == 0 || !connected || !rpcReady
                 || writeBusy || pendingWrite != null || !outgoing.isEmpty()
@@ -1176,7 +1199,7 @@ final class BleLink implements AutoCloseable {
             return;
         }
         if (uploadNextOffset >= uploading.length) return;
-        int length = Math.min(UPLOAD_RPC_BYTES, uploading.length - uploadNextOffset);
+        int length = Math.min(uploadChunkSize(), uploading.length - uploadNextOffset);
         int offset = uploadNextOffset;
         uploadNextOffset += length;
         queuePacket(FlipperRpc.writeRequest(operationId, uploadTarget, uploading,
@@ -1185,14 +1208,16 @@ final class BleLink implements AutoCloseable {
 
     /** Ask the connected Flipper for the REAL contents of /ext/apps via protobuf RPC. */
     /** Background RPC must never enter a PRESS/SHORT/RELEASE sequence. */
-    boolean isIdleForShop() {
+    boolean isIdleForShop() { return !firmwarePriority && isIdleForFirmware(); }
+    boolean isIdleForFirmware() {
         return connected && rpcReady && operationId == 0 && readId == 0 && fileId == 0
-                && storageInfoId == 0 && !inventoryRunning && uploading == null && pendingWrite == null
+                && storageInfoId == 0 && deviceInfoId == 0 && !inventoryRunning && uploading == null && pendingWrite == null
                 && !keySequenceRunning && keyQueue.isEmpty() && heldInputMask == 0
                 && outgoing.isEmpty() && interactiveOutgoing.isEmpty() && !writeBusy;
     }
 
     void requestInventory() {
+        if (firmwarePriority) return;
         if (!connected || !rpcReady || inventoryRunning) return;
         inventoryRunning = true;
         inventoryPaths.clear(); inventoryVisited.clear(); inventoryNames.clear(); inventoryFullPaths.clear();
@@ -1224,7 +1249,10 @@ final class BleLink implements AutoCloseable {
             if (frame == null) return;
             writeBusy = true;
             if (uploading != null) uploadSentFrames++;
-            usbTransport.writeAsync(frame, ok -> handler.post(() -> afterUsbWrite(ok)));
+            final long generation = rpcGeneration;
+            usbTransport.writeAsync(frame, ok -> handler.post(() -> {
+                if (generation == rpcGeneration) afterUsbWrite(ok);
+            }));
             return;
         }
         if (writeBusy || !connected || gatt == null || rpcWrite == null || credits <= 0) return;
@@ -1342,13 +1370,17 @@ final class BleLink implements AutoCloseable {
         if (raw.commandId == deviceInfoId && deviceInfoId != 0) {
             if (raw.status == 0 && raw.type == FlipperRpc.SYSTEM_DEVICE_INFO_RESPONSE) {
                 String[] prop = FlipperRpc.deviceInfoPair(raw.content);
-                if ("firmware_api_major".equals(prop[0])) {
+                if ("hardware_uid".equals(prop[0])) {
+                    if (prop[1] != null && prop[1].matches("[0-9a-fA-F]{8,64}"))
+                        deviceUid = prop[1].toUpperCase(java.util.Locale.ROOT);
+                } else if ("firmware_api_major".equals(prop[0])) {
                     try { apiMajor = Integer.parseInt(prop[1]); } catch (Exception ignored) { }
                 } else if ("firmware_api_minor".equals(prop[0])) {
                     try { apiMinor = Integer.parseInt(prop[1]); } catch (Exception ignored) { }
                 } else if ("firmware_version".equals(prop[0])) {
                     if (prop[1] != null && prop[1].matches(".*[0-9]+\\.[0-9]+\\.[0-9]+.*")) {
                         firmwareVersionSeen = true;
+                        deviceFirmwareVersion = FirmwareUpdatePolicy.versionIn(prop[1]);
                         callbacks.information("firmware", prop[1]);
                     }
                 }
@@ -1464,6 +1496,7 @@ final class BleLink implements AutoCloseable {
 
     @SuppressLint("MissingPermission")
     private void disconnectGatt() {
+        ++rpcGeneration;
         ++screenRestartGeneration;
         screenRestartPending = false;
         handler.post(() -> { keyQueue.clear(); keySequenceRunning = false; });
@@ -1498,6 +1531,8 @@ final class BleLink implements AutoCloseable {
         writeBusy = false; credits = 0; flowSubscribed = false;
         rpcReady = false; rpcSubscribing = false; rpcWrite = null; rpcFlow = null;
         handler.removeCallbacks(deviceInfoRetry);
+        deviceUid = null;
+        deviceFirmwareVersion = null;
         deviceInfoId = 0; apiMajor = -1; apiMinor = -1; deviceInfoRetries = 0;
         firmwareVersionSeen = false; deviceInfoRefreshQueued = false;
         rpcInput.reset();

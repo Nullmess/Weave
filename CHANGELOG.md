@@ -9,6 +9,8 @@
 - Cryptographic performance, RAM and stack benchmarks.
 - uFBT-compatible SDK packaging and dedicated build command.
 - Automated security, compatibility and firmware validation.
+- Android firmware updates over USB/Bluetooth, including optional pre-releases.
+- Native Android APK update installation and complete Developer API reference.
 
 ## [1.0.2]
 

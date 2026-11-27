@@ -131,7 +131,13 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_FAP_IMPORT = 79;
     private static final int REQUEST_FILE_EXPORT_ARCHIVE = 80;
     private static final int REQUEST_UPDATE_APK_SAVE = 81;
+    private static final int REQUEST_UPDATE_APK_PERMISSION = 82;
+    private static final int REQUEST_UPDATE_APK_INSTALL = 83;
     private File pendingUpdateApk;
+    private String pendingApkVersion;
+    private int apkUpdateRequest;
+    private boolean apkReadyToInstall;
+
     private FrameLayout terminalPanel;
     private TextView terminalCliTab, terminalLogsTab;
     private int terminalMode = 0; // 0 = Flipper CLI (BLE or USB), 1 = LOGS
@@ -452,7 +458,10 @@ public final class MainActivity extends Activity {
     }
 
     private void requestInstalledFirmwareVersion() {
-        if (!flipperIsConnected()) return;
+        if (!flipperIsConnected() || FirmwareUpdatePolicy.activePhase(prefs.getString("firmware_update_phase", ""))) {
+            completeSettingsFirmwareRead();
+            return;
+        }
         firmwareVersionReadPending = true;
         firmwareVersionReadFailed = false;
         prefs.edit().remove(WeaveService.KEY_FIRMWARE).apply();
@@ -936,6 +945,7 @@ public final class MainActivity extends Activity {
         boolean busy;
         boolean checkingRelease;
         int releaseCheckEpoch;
+        String firmwarePhase = "";
         final List<Runnable> pendingCheckListeners = new ArrayList<>();
         WeaveUpdates.Release release;
         TextView versionView, buttonText;
@@ -1285,6 +1295,14 @@ public final class MainActivity extends Activity {
                 case WeaveService.EVENT_FIRMWARE_UPDATE:
                     String phase = intent.getStringExtra("phase");
                     UpdateControl firmwareUpdate = updateControls[UPDATE_FIRMWARE];
+                    firmwareUpdate.firmwarePhase = phase;
+                    if (firmwareUpdate.checkingRelease) {
+                        ++firmwareUpdate.releaseCheckEpoch;
+                        firmwareUpdate.checkingRelease = false;
+                        List<Runnable> callbacks = new ArrayList<>(firmwareUpdate.pendingCheckListeners);
+                        firmwareUpdate.pendingCheckListeners.clear();
+                        for (Runnable callback : callbacks) callback.run();
+                    }
                     if ("error".equals(phase)) {
                         firmwareUpdate.busy = false;
                         firmwareUpdate.state = "unknown";
@@ -1345,7 +1363,20 @@ public final class MainActivity extends Activity {
                 return true;
             }
         });
-        if (saved != null) selectedPage = saved.getInt("page", HOME);
+        if (saved != null) {
+            selectedPage = saved.getInt("page", HOME);
+            pendingApkVersion = saved.getString("apk_update_version");
+            if (pendingApkVersion != null) {
+                pendingUpdateApk = new File(new File(getCacheDir(), "weave-updates"), "weave-app.apk");
+                if (pendingUpdateApk.isFile()) {
+                    apkUpdateRequest = saved.getInt("apk_update_request");
+                    apkReadyToInstall = saved.getBoolean("apk_update_ready") || apkUpdateRequest == 0;
+                    updateControls[UPDATE_APP].busy = true;
+                    updateControls[UPDATE_APP].percent = 100;
+                    updateControls[UPDATE_APP].state = "installing";
+                } else clearApkUpdate();
+            }
+        }
         getWindow().setStatusBarColor(BACKGROUND);
         getWindow().setNavigationBarColor(SURFACE);
         IntentFilter filter = new IntentFilter(USB_PERMISSION);
@@ -3740,11 +3771,28 @@ public final class MainActivity extends Activity {
             }
             return;
         }
+        if (requestCode == REQUEST_UPDATE_APK_PERMISSION) {
+            apkUpdateRequest = 0;
+            if (pendingUpdateApk == null) { clearApkUpdate(); return; }
+            if (getPackageManager().canRequestPackageInstalls()) {
+                apkReadyToInstall = true;
+                if (appForeground) openApkInstaller();
+            } else offerApkRecovery("Installation permission not granted.");
+            return;
+        }
+        if (requestCode == REQUEST_UPDATE_APK_INSTALL) {
+            apkUpdateRequest = 0;
+            if (resultCode == RESULT_OK) {
+                clearApkUpdate(); // Android usually restarts the updated process.
+                toast("Installer completed");
+            } else offerApkRecovery("Installation cancelled or refused by Android.");
+            return;
+        }
         if (requestCode == REQUEST_UPDATE_APK_SAVE) {
             File apk = pendingUpdateApk;
-            pendingUpdateApk = null;
+            apkUpdateRequest = 0;
             if (resultCode != RESULT_OK || data == null || data.getData() == null ||
-                    apk == null || !apk.isFile()) return;
+                    apk == null || !apk.isFile()) { clearApkUpdate(); return; }
             final Uri destination = data.getData();
             new Thread(() -> {
                 try (InputStream source = new java.io.FileInputStream(apk);
@@ -3754,15 +3802,23 @@ public final class MainActivity extends Activity {
                     int count;
                     while ((count = source.read(buffer)) != -1) output.write(buffer, 0, count);
                     output.flush();
-                    handler.post(() -> new AlertDialog.Builder(this)
-                            .setTitle("APK saved")
-                            .setMessage("The new Weave APK has been saved in the selected folder. " +
-                                    "If Android rejects the update because of a different signing key, " +
-                                    "back up your Weave settings, uninstall the old app, " +
-                                    "then open this APK in Files to install it. Uninstalling erases app data.")
-                            .setPositiveButton("OK", null).show());
+                    handler.post(() -> {
+                        clearApkUpdate();
+                        if (isFinishing() || isDestroyed()) return;
+                        new AlertDialog.Builder(this)
+                                .setTitle("APK saved")
+                                .setMessage("Open the saved APK from Files in this Android profile. " +
+                                        "If the signing key is incompatible, back up your settings, " +
+                                        "uninstall Weave from this profile only, then open the saved APK. " +
+                                        "Do not choose Uninstall for all users. Uninstalling erases this profile's app data. " +
+                                        "Android may refuse a different signing key if Weave remains installed in another profile.")
+                                .setPositiveButton("OK", null).show();
+                    });
                 } catch (Exception failure) {
-                    handler.post(() -> toast("APK save failed: " + failure.getMessage()));
+                    handler.post(() -> {
+                        clearApkUpdate();
+                        toast("APK save failed: " + failure.getMessage());
+                    });
                 }
             }, "Weave-apk-export").start();
             return;
@@ -4178,6 +4234,29 @@ public final class MainActivity extends Activity {
         updatesRefresh.setOnClickListener(v -> beginGestureRefresh());
         updatesHeader.addView(updatesRefresh, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
+        Switch previewUpdates = new Switch(this);
+        previewUpdates.setText("Include pre-releases");
+        previewUpdates.setTextColor(WHITE);
+        previewUpdates.setTextSize(12);
+        previewUpdates.setChecked(prefs.getBoolean(WeaveService.KEY_PREVIEW_UPDATES, false));
+        previewUpdates.setOnCheckedChangeListener((button, checked) -> {
+            boolean previous = prefs.getBoolean(WeaveService.KEY_PREVIEW_UPDATES, false);
+            if (checked == previous) return;
+            if (FirmwareUpdatePolicy.activePhase(prefs.getString("firmware_update_phase", "")) ||
+                    updateControls[UPDATE_APP].busy || updateControls[UPDATE_FIRMWARE].busy) {
+                button.setChecked(previous);
+                toast("Wait for the current update operation to finish");
+                return;
+            }
+            prefs.edit().putBoolean(WeaveService.KEY_PREVIEW_UPDATES, checked).apply();
+            for (int i = 0; i < 2; i++) {
+                updateControls[i].release = null;
+                updateControls[i].lastCheck = 0;
+                checkUpdate(i);
+            }
+        });
+        root.addView(previewUpdates, new LinearLayout.LayoutParams(-1, -2));
+        restoreFirmwareUpdateUi();
         LinearLayout updates = new LinearLayout(this);
         updates.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout.LayoutParams updatesParams = new LinearLayout.LayoutParams(-1, -2);
@@ -4273,6 +4352,28 @@ public final class MainActivity extends Activity {
         } catch (SecurityException ignored) { return false; }
     }
 
+    private void restoreFirmwareUpdateUi() {
+        String phase = prefs.getString("firmware_update_phase", "");
+        UpdateControl control = updateControls[UPDATE_FIRMWARE];
+        if (FirmwareUpdatePolicy.activePhase(phase)) {
+            if (control.checkingRelease) {
+                ++control.releaseCheckEpoch;
+                control.checkingRelease = false;
+                List<Runnable> callbacks = new ArrayList<>(control.pendingCheckListeners);
+                control.pendingCheckListeners.clear();
+                for (Runnable callback : callbacks) handler.post(callback);
+            }
+            control.firmwarePhase = phase;
+            control.state = "installing";
+            control.busy = true;
+            control.percent = prefs.getInt("firmware_update_percent", 0);
+        } else if (control.busy && "installing".equals(control.state) &&
+                ("error".equals(phase) || "ready".equals(phase))) {
+            control.busy = false;
+            control.state = "ready".equals(phase) ? "current" : "unknown";
+            control.error = prefs.getString("firmware_update_message", "");
+        }
+    }
     private void drawUpdateControl(int kind) {
         UpdateControl control = updateControls[kind];
         String current = updateCurrentVersion(kind);
@@ -4284,7 +4385,8 @@ public final class MainActivity extends Activity {
         // The firmware version can arrive *after* GitHub responds. Reconcile
         // a successful release check with the latest verified device version;
         // never retain the initial unknown/waiting status indefinitely.
-        if (canCompare && !control.busy && control.lastCheck > 0) {
+        if (canCompare && !control.busy && control.lastCheck > 0 &&
+                (control.error == null || control.error.isEmpty())) {
             status = WeaveUpdates.compare(current, control.release.version) < 0
                     ? "available" : "current";
             // Make the click handler agree with the icon without another
@@ -4301,8 +4403,19 @@ public final class MainActivity extends Activity {
         if (canCompare && WeaveUpdates.compare(current, control.release.version) < 0 &&
                 ("available".equals(status) || control.busy))
             label += " → v" + control.release.version;
-        if (control.busy && firmware && "installing".equals(control.state))
-            label = "Installing on Flipper";
+        if (control.busy && firmware && "installing".equals(control.state)) {
+            switch (control.firmwarePhase) {
+                case "waiting": label = "Waiting for RPC…"; break;
+                case "downloading": label = "Downloading firmware…"; break;
+                case "staging": label = "Checking firmware bundle…"; break;
+                case "uploading": label = "Transferring via " + currentTransportLabel(); break;
+                case "preparing": label = "Preparing update…"; break;
+                case "rebooting": label = "Waiting for reboot…"; break;
+                default: label = "Installing on Flipper"; break;
+            }
+        }
+        else if (control.busy && !firmware && "installing".equals(control.state))
+            label = "Confirm Android installation…";
         else if (!control.busy && "pending".equals(status))
             label = "v" + control.pendingVersion + " build pending";
         else if (!control.busy && control.error != null && !control.error.isEmpty())
@@ -4366,6 +4479,7 @@ public final class MainActivity extends Activity {
     }
 
     private void checkUpdate(int kind, Runnable afterCheck, boolean force) {
+        if (kind == UPDATE_FIRMWARE) restoreFirmwareUpdateUi();
         UpdateControl control = updateControls[kind];
         if (control.busy && (!force || !control.checkingRelease)) {
             if (afterCheck != null) {
@@ -4383,9 +4497,10 @@ public final class MainActivity extends Activity {
         if (afterCheck != null) control.pendingCheckListeners.add(afterCheck);
         control.percent = 0;
         drawUpdateControl(kind);
+        final boolean preview = prefs.getBoolean(WeaveService.KEY_PREVIEW_UPDATES, false);
         new Thread(() -> {
             try {
-                WeaveUpdates.Release release = WeaveUpdates.latest(kind == UPDATE_FIRMWARE);
+                WeaveUpdates.Release release = WeaveUpdates.latest(kind == UPDATE_FIRMWARE, preview);
                 handler.post(() -> {
                     if (epoch != control.releaseCheckEpoch) return; // Superseded by a manual refresh.
                     control.release = release;
@@ -4432,13 +4547,13 @@ public final class MainActivity extends Activity {
     private void tapUpdate(int kind) {
         UpdateControl control = updateControls[kind];
         if (control.busy) return;
+        if (kind == UPDATE_FIRMWARE && updateControls[UPDATE_APP].busy && !updateControls[UPDATE_APP].checkingRelease ||
+                kind == UPDATE_APP && (updateControls[UPDATE_FIRMWARE].busy && !updateControls[UPDATE_FIRMWARE].checkingRelease ||
+                        FirmwareUpdatePolicy.activePhase(prefs.getString("firmware_update_phase", "")))) {
+            toast("Finish the active update first"); return;
+        }
         if (kind == UPDATE_FIRMWARE && !flipperIsConnected()) {
             control.state = "unknown"; toast("Flipper disconnected"); drawUpdateControl(kind); return;
-        }
-        if (kind == UPDATE_FIRMWARE &&
-                !"Bluetooth".equalsIgnoreCase(prefs.getString(WeaveService.KEY_TRANSPORT, ""))) {
-            toast("Firmware installation currently requires a Bluetooth Flipper connection");
-            return;
         }
         if ("current".equals(control.state) && control.release != null &&
                 WeaveUpdates.compare(updateCurrentVersion(kind), control.release.version) >= 0) return;
@@ -4453,7 +4568,12 @@ public final class MainActivity extends Activity {
         if (WeaveUpdates.compare(updateCurrentVersion(kind), control.release.version) >= 0) {
             checkUpdate(kind); return;
         }
-        control.busy = true; control.percent = 0; drawUpdateControl(kind);
+        control.busy = true; control.percent = 0;
+        if (kind == UPDATE_FIRMWARE) {
+            control.state = "installing";
+            control.firmwarePhase = "waiting";
+        }
+        drawUpdateControl(kind);
         if (kind == UPDATE_FIRMWARE) {
             // Keep downloading and flashing alive while Settings is backgrounded.
             startService(new Intent(this, WeaveService.class)
@@ -4461,14 +4581,21 @@ public final class MainActivity extends Activity {
                     .putExtra("version", control.release.version));
             return;
         }
+        final WeaveUpdates.Release release = control.release;
         new Thread(() -> {
             try {
-                File file = WeaveUpdates.download(this, control.release, kind == UPDATE_FIRMWARE,
+                File file = WeaveUpdates.download(this, release, false,
                         percent -> handler.post(() -> { control.percent = percent; drawUpdateControl(kind); }));
+                validateDownloadedApk(file, release.version);
                 handler.post(() -> {
-                    control.busy = false;
-                    drawUpdateControl(kind); // Downloaded != installed: wait for version verification.
-                    presentDownloadedUpdate(kind, file);
+                    if (isFinishing() || isDestroyed()) return;
+                    pendingUpdateApk = file;
+                    pendingApkVersion = release.version;
+                    apkReadyToInstall = true;
+                    control.state = "installing";
+                    control.percent = 100;
+                    drawUpdateControl(kind);
+                    if (appForeground) openApkInstaller();
                 });
             } catch (Exception e) {
                 handler.post(() -> {
@@ -4482,23 +4609,85 @@ public final class MainActivity extends Activity {
         }, "Weave-release-download").start();
     }
 
-    private void presentDownloadedUpdate(int kind, File file) {
-        if (kind != UPDATE_APP || file == null || !file.isFile()) return;
-        // A debug-signed release might not install over an older APK.
-        // Let Android's document picker select Downloads or another folder;
-        // the downloaded installer survives removal of this application.
-        pendingUpdateApk = file;
+    private void validateDownloadedApk(File apk, String version) throws IOException {
+        android.content.pm.PackageInfo info = getPackageManager().getPackageArchiveInfo(apk.getAbsolutePath(), 0);
+        if (info == null || !getPackageName().equals(info.packageName) || !version.equals(info.versionName))
+            throw new IOException("APK package or version mismatch");
+        long code = Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+        if (code <= BuildConfig.VERSION_CODE) throw new IOException("APK is not a newer build");
+    }
+
+    private void clearApkUpdate() {
+        pendingUpdateApk = null;
+        pendingApkVersion = null;
+        apkReadyToInstall = false;
+        apkUpdateRequest = 0;
+        UpdateControl control = updateControls[UPDATE_APP];
+        control.busy = false;
+        control.state = "unknown";
+        control.error = "";
+        drawUpdateControl(UPDATE_APP);
+    }
+
+    private void openApkInstaller() {
+        if (!apkReadyToInstall || apkUpdateRequest != 0 || !appForeground || isFinishing() || isDestroyed()) return;
+        apkReadyToInstall = false;
+        if (pendingUpdateApk == null || !pendingUpdateApk.isFile()) {
+            clearApkUpdate(); toast("Downloaded APK unavailable"); return;
+        }
+        if (FirmwareUpdatePolicy.activePhase(prefs.getString("firmware_update_phase", ""))) {
+            offerApkRecovery("Finish the firmware update before updating Android."); return;
+        }
+        try {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                apkUpdateRequest = REQUEST_UPDATE_APK_PERMISSION;
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())), apkUpdateRequest);
+                return;
+            }
+            // Installateur système du profil courant, aucune opération cross-user.
+            // Android contrôle la signature et exige le consentement de l'utilisateur.
+            Uri uri = Uri.parse("content://" + getPackageName() + ".updates/weave-app.apk");
+            Intent install = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+            install.setDataAndType(uri, "application/vnd.android.package-archive");
+            install.setClipData(ClipData.newRawUri("Weave APK", uri));
+            install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            install.putExtra(Intent.EXTRA_RETURN_RESULT, true);
+            apkUpdateRequest = REQUEST_UPDATE_APK_INSTALL;
+            startActivityForResult(install, apkUpdateRequest);
+        } catch (RuntimeException e) {
+            apkUpdateRequest = 0;
+            offerApkRecovery("Android installer unavailable: " + e.getMessage());
+        }
+    }
+
+    private void offerApkRecovery(String message) {
+        if (pendingUpdateApk == null || !pendingUpdateApk.isFile() || isFinishing() || isDestroyed()) {
+            clearApkUpdate(); return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("App update")
+                .setMessage(message + "\n\nYou can save the APK before a manual reinstall. A different signing key " +
+                        "may require removing the old app from this profile. App data would be lost.")
+                .setPositiveButton("Retry", (dialog, which) -> {
+                    apkReadyToInstall = true;
+                    openApkInstaller();
+                })
+                .setNeutralButton("Save APK", (dialog, which) -> saveUpdateApk())
+                .setNegativeButton("Close", (dialog, which) -> clearApkUpdate())
+                .setOnCancelListener(dialog -> clearApkUpdate()).show();
+    }
+
+    private void saveUpdateApk() {
         Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         save.setType("application/vnd.android.package-archive");
         save.addCategory(Intent.CATEGORY_OPENABLE);
-        save.putExtra(Intent.EXTRA_TITLE,
-                updateControls[UPDATE_APP].release == null ? "Weave-android.apk" :
-                        updateControls[UPDATE_APP].release.name);
+        save.putExtra(Intent.EXTRA_TITLE, "Weave-" + pendingApkVersion + "-android.apk");
         try {
-            startActivityForResult(save, REQUEST_UPDATE_APK_SAVE);
-        } catch (ActivityNotFoundException e) {
-            pendingUpdateApk = null;
-            toast("No document picker available to save the APK");
+            apkUpdateRequest = REQUEST_UPDATE_APK_SAVE;
+            startActivityForResult(save, apkUpdateRequest);
+        } catch (RuntimeException e) {
+            clearApkUpdate(); toast("No document picker available to save the APK");
         }
     }
 
@@ -6194,6 +6383,7 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         appForeground = true;
+        if (apkReadyToInstall) handler.post(this::openApkInstaller);
         consumeFindDeviceIntent();
         // If the alert began while Weave was behind another app, opening Weave
         // (normally from either notification action) must show the same modal.
@@ -6260,6 +6450,11 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putInt("page", selectedPage);
+        if (pendingUpdateApk != null && pendingApkVersion != null) {
+            state.putString("apk_update_version", pendingApkVersion);
+            state.putInt("apk_update_request", apkUpdateRequest);
+            state.putBoolean("apk_update_ready", apkReadyToInstall);
+        }
         super.onSaveInstanceState(state);
     }
     @Override protected void onDestroy() {

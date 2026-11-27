@@ -41,6 +41,7 @@ public final class WeaveService extends Service {
     static final String KEY_ENABLED = "enabled";
     static final String KEY_BOOT = "boot";
     static final String KEY_GATEWAY = "gateway";
+    static final String KEY_PREVIEW_UPDATES = "preview_updates";
     static final String KEY_MODE = "mode";
     static final String KEY_ACTIVE = "active";
     static final String KEY_CONNECTED = "connected";
@@ -167,221 +168,263 @@ public final class WeaveService extends Service {
     private String pendingInstallPath;
     private volatile boolean bleConfirmed;
 
+    // Le service possède le job, quel que soit le transport ou l'écran Android.
     private static final class FirmwareJob {
-        final WeaveFirmwarePackage.Prepared packageFiles;
-        final String version, deviceKey;
+        WeaveFirmwarePackage.Prepared packageFiles;
+        final String version, deviceKey, token;
+        final boolean preview;
+        long epoch;
+        String uid;
         int index;
-        String phase = "staging";
-        FirmwareJob(WeaveFirmwarePackage.Prepared packageFiles, String version, String deviceKey) {
-            this.packageFiles = packageFiles;
+        long sentBytes, idleDeadline;
+        String phase = "waiting";
+        boolean disconnectedForReboot;
+        java.util.concurrent.Future<?> work;
+        FirmwareJob(String version, String deviceKey, String token, boolean preview) {
             this.version = version;
             this.deviceKey = deviceKey;
+            this.token = token;
+            this.preview = preview;
         }
     }
     private FirmwareJob firmwareJob;
-    private boolean firmwareStaging;
-    private boolean firmwareDownloading;
-    private String flipperFirmwareInstallToken;
     private final Runnable firmwareVerifyTimeout = () -> {
         if (firmwareJob != null && "rebooting".equals(firmwareJob.phase))
-            finishFirmwareJob(false, "Flipper rebooted but the installed firmware version could not be verified");
+            finishFirmwareJob(false, "Update sent; installed version could not be verified");
     };
+    private boolean firmwareActive() { return firmwareJob != null; }
+    private boolean firmwareTarget(FirmwareJob job) {
+        return !stopping && bleConfirmed && ble != null && ble.isRpcReady() &&
+                job.epoch == firmwareConnectionEpoch && job.deviceKey.equals(ble.connectedDeviceKey()) &&
+                (job.uid == null || job.uid.equals(ble.deviceUid()));
+    }
+    // Ne pas couper une transaction multi-RPC déjà engagée (FAP, rename, batch).
+    private boolean firmwareConflictingTransaction() {
+        return shopNetworkBusy || shopTransferActive || shopVerifying || pendingShopFap != null ||
+                pendingInstallPath != null || activeCatalogJob != null || deletingBatch ||
+                catalogCleanupRunning || pendingRemoteInstallFinal != null || nativeShopHomeToken != null ||
+                (shopRequestToken != null && ("downloading".equals(shopPhase) || "installing".equals(shopPhase)));
+    }
+    private void scheduleFirmware(FirmwareJob job, String phase) {
+        if (firmwareJob != job) return;
+        job.phase = phase;
+        job.idleDeadline = android.os.SystemClock.elapsedRealtime() + 60000L;
+        handler.removeCallbacks(nextFirmwareMember);
+        handler.post(nextFirmwareMember);
+    }
     private final Runnable nextFirmwareMember = new Runnable() {
         @Override public void run() {
             FirmwareJob job = firmwareJob;
-            if (job == null || !"uploading".equals(job.phase)) return;
-            if (!bleConfirmed || ble == null || !job.deviceKey.equals(ble.connectedDeviceKey())) {
-                finishFirmwareJob(false, "Flipper disconnected during firmware upload");
+            if (job == null || "rebooting".equals(job.phase) || "downloading".equals(job.phase) ||
+                    "staging".equals(job.phase)) return;
+            if (!firmwareTarget(job)) {
+                finishFirmwareJob(false, "Flipper disconnected during firmware update");
                 return;
             }
-            if (!ble.isIdleForShop()) {
+            if (android.os.SystemClock.elapsedRealtime() >= job.idleDeadline) {
+                finishFirmwareJob(false, "Timed out waiting for firmware RPC");
+                return;
+            }
+            if (job.uid == null) job.uid = ble.deviceUid();
+            if (job.uid == null || ble.deviceFirmwareVersion() == null) {
+                ble.requestDeviceInfo();
                 handler.postDelayed(this, 400);
                 return;
             }
-            if (job.index >= job.packageFiles.files.size()) {
-                job.phase = "preparing";
-                broadcastFirmwareUpdate("preparing", 99, null);
-                ble.prepareFirmwareUpdate(job.packageFiles.manifestPath);
+            if (!ble.isIdleForFirmware()) {
+                handler.postDelayed(this, 200);
                 return;
             }
-            WeaveFirmwarePackage.Member member = job.packageFiles.files.get(job.index);
-            new Thread(() -> {
-                try {
-                    if (member.size > 16_000_000 || member.size <= 0)
-                        throw new java.io.IOException("Unsupported empty or oversized firmware entry");
-                    byte[] data = new byte[(int)member.size];
-                    try (java.io.FileInputStream stream = new java.io.FileInputStream(member.file)) {
-                        int offset = 0;
-                        while (offset < data.length) {
-                            int count = stream.read(data, offset, data.length - offset);
-                            if (count < 0) throw new java.io.IOException("Truncated staged firmware file");
-                            offset += count;
-                        }
+            switch (job.phase) {
+                case "waiting":
+                    if (WeaveUpdates.compare(ble.deviceFirmwareVersion(), job.version) >= 0) {
+                        finishFirmwareJob(true, "Flipper firmware is already up to date");
+                        return;
                     }
-                    handler.post(() -> {
-                        if (firmwareJob != job || !bleConfirmed ||
-                                !job.deviceKey.equals(ble.connectedDeviceKey())) return;
-                        ble.uploadFile(member.remotePath, data, "Firmware Upload");
+                    if (job.token == null) downloadFirmware(job);
+                    else {
+                        job.phase = "acknowledging";
+                        ble.uploadFile(FW_INSTALL_RESULT, (job.token + "|accepted").getBytes(
+                                java.nio.charset.StandardCharsets.US_ASCII), "Firmware Accept");
+                    }
+                    return;
+                case "mkdir_root":
+                    ble.firmwareMkdir("/ext/update", "Firmware Mkdir Root");
+                    return;
+                case "mkdir_package":
+                    ble.firmwareMkdir(job.packageFiles.manifestPath.substring(0,
+                            job.packageFiles.manifestPath.lastIndexOf('/')), "Firmware Mkdir Package");
+                    return;
+                case "uploading":
+                    if (job.index >= job.packageFiles.files.size()) {
+                        job.phase = "preparing";
+                        broadcastFirmwareUpdate("preparing", 99, null);
+                        ble.prepareFirmwareUpdate(job.packageFiles.manifestPath);
+                        return;
+                    }
+                    WeaveFirmwarePackage.Member member = job.packageFiles.files.get(job.index);
+                    job.phase = "reading_member";
+                    job.work = firmwareNetwork.submit(() -> {
+                        try {
+                            if (member.size <= 0 || member.size > WeaveFirmwarePackage.MAX_FILE_BYTES)
+                                throw new java.io.IOException("Unsupported firmware entry size");
+                            byte[] data = java.nio.file.Files.readAllBytes(member.file.toPath());
+                            if (data.length != member.size) throw new java.io.IOException("Truncated staged firmware file");
+                            handler.post(() -> {
+                                if (firmwareJob != job) return;
+                                if (!firmwareTarget(job)) {
+                                    finishFirmwareJob(false, "Flipper disconnected during firmware upload");
+                                    return;
+                                }
+                                job.phase = "sending_member";
+                                sendFirmwareMember(job, member, data, android.os.SystemClock.elapsedRealtime() + 60000L);
+                            });
+                        } catch (Exception error) {
+                            handler.post(() -> { if (firmwareJob == job) finishFirmwareJob(false, error.getMessage()); });
+                        }
                     });
-                } catch (Exception error) {
-                    handler.post(() -> {
-                        if (firmwareJob == job) finishFirmwareJob(false, error.getMessage());
-                    });
-                }
-            }, "Weave-firmware-chunk").start();
+                    return;
+                case "reboot_pending":
+                    job.phase = "rebooting";
+                    broadcastFirmwareUpdate("rebooting", 99, null);
+                    handler.postDelayed(firmwareVerifyTimeout, 300000L);
+                    ble.rebootForFirmwareUpdate();
+                    return;
+                default: return;
+            }
         }
     };
+    private void sendFirmwareMember(FirmwareJob job, WeaveFirmwarePackage.Member member, byte[] data, long deadline) {
+        if (firmwareJob != job) return;
+        if (!firmwareTarget(job) || android.os.SystemClock.elapsedRealtime() >= deadline) {
+            finishFirmwareJob(false, "Flipper disconnected or RPC did not drain");
+            return;
+        }
+        if (!ble.isIdleForFirmware()) {
+            handler.postDelayed(() -> sendFirmwareMember(job, member, data, deadline), 200);
+            return;
+        }
+        job.phase = "uploading";
+        ble.uploadFile(member.remotePath, data, "Firmware Upload");
+    }
     private void broadcastFirmwareUpdate(String phase, int percent, String message) {
+        if (message == null && phase.equals(prefs.getString("firmware_update_phase", "")) &&
+                percent == prefs.getInt("firmware_update_percent", -1)) return;
         Intent event = new Intent(EVENT_FIRMWARE_UPDATE).setPackage(getPackageName());
         event.putExtra("phase", phase).putExtra("percent", Math.max(0, Math.min(100, percent)));
         if (message != null) event.putExtra("message", message);
         if (firmwareJob != null) event.putExtra("version", firmwareJob.version);
+        // État partagé avec l'Activity, même après recréation de son écran.
+        prefs.edit().putString("firmware_update_phase", phase).putInt("firmware_update_percent", percent)
+                .putString("firmware_update_message", message == null ? "" : message).apply();
         sendBroadcast(event);
-        // Report failures to Flipper Settings as well as the Android UI.
-        if ("error".equals(phase) && flipperFirmwareInstallToken != null) {
-            String token = flipperFirmwareInstallToken;
-            flipperFirmwareInstallToken = null;
-            handler.postDelayed(() -> writeFirmwareInstallResult(token, "error|transfer", 0), 250);
-        } else if ("ready".equals(phase) && flipperFirmwareInstallToken != null) {
-            String token = flipperFirmwareInstallToken;
-            flipperFirmwareInstallToken = null;
-            handler.postDelayed(() -> writeFirmwareInstallResult(token, "done", 0), 250);
-        }
     }
     private void finishFirmwareJob(boolean ready, String message) {
+        FirmwareJob job = firmwareJob;
+        if (job == null) return;
         handler.removeCallbacks(nextFirmwareMember);
         handler.removeCallbacks(firmwareVerifyTimeout);
-        firmwareStaging = false;
         broadcastFirmwareUpdate(ready ? "ready" : "error", ready ? 100 : 0, message);
         firmwareJob = null;
+        if (job.work != null) job.work.cancel(true);
+        ble.setFirmwarePriority(false);
+        if (!stopping && job.token != null && firmwareTarget(job))
+            writeFirmwareInstallResult(job.token, ready ? "done" : "error|transfer", 0);
+        handler.post(() -> {
+            if (stopping || firmwareActive() || !bleConfirmed || pendingFirmwareReply != null) return;
+            if (prefs.getBoolean("screen_requested", false)) ble.startScreen();
+            ble.requestInventory();
+            ble.requestStorageInfo("/ext");
+        });
+        handler.post(drainCatalogQueue);
+        handler.post(ringDrain);
+        handler.post(shopProcess);
     }
-    // Runs in the foreground companion service whether requested by Android
-    // Settings or by the physical Flipper. The same verified cache is then
-    // handed to the existing firmware staging / updater RPC implementation.
     private void startFirmwareDownloadInstall(String expectedVersion, String flipperToken) {
-        if (expectedVersion == null || !expectedVersion.matches("\\d+\\.\\d+\\.\\d+") ||
-                firmwareDownloading || firmwareStaging || firmwareJob != null ||
-                !bleConfirmed || ble == null || !ble.isRpcReady() ||
-                ble.connectedDeviceKey() == null || remoteInputLocked()) {
-            if (flipperToken != null)
-                writeFirmwareInstallResult(flipperToken, "error|busy", 0);
-            // A second tap must not abort or report failure for an active job.
-            if (flipperFirmwareInstallToken == null)
-                broadcastFirmwareUpdate("error", 0,
-                        "Firmware installation requires an idle Bluetooth connection");
+        if (firmwareJob != null) return; // Double tap idempotent.
+        String error = null;
+        if (!FirmwareUpdatePolicy.validVersion(expectedVersion)) error = "Invalid firmware version";
+        else if (!bleConfirmed || ble == null || !ble.isRpcReady() || ble.connectedDeviceKey() == null)
+            error = "Connect Flipper over USB or Bluetooth";
+        else if (firmwareConflictingTransaction()) error = "Finish the active app/file transaction first";
+        if (error != null) {
+            if (flipperToken != null) writeFirmwareInstallResult(flipperToken, "error|busy", 0);
+            broadcastFirmwareUpdate("error", 0, error);
             return;
         }
-        final String deviceKey = ble.connectedDeviceKey();
-        firmwareDownloading = true;
-        flipperFirmwareInstallToken = flipperToken;
-        if (flipperToken != null) writeFirmwareInstallResult(flipperToken, "accepted", 0);
+        FirmwareJob job = new FirmwareJob(expectedVersion, ble.connectedDeviceKey(), flipperToken,
+                prefs.getBoolean(KEY_PREVIEW_UPDATES, false));
+        job.uid = ble.deviceUid();
+        job.epoch = firmwareConnectionEpoch;
+        firmwareJob = job;
+        ble.setFirmwarePriority(true);
+        broadcastFirmwareUpdate("waiting", 0, null);
+        scheduleFirmware(job, "waiting");
+    }
+    private void downloadFirmware(FirmwareJob job) {
+        if (firmwareJob != job) return;
+        job.phase = "downloading";
         broadcastFirmwareUpdate("downloading", 0, null);
-        firmwareNetwork.execute(() -> {
+        job.work = firmwareNetwork.submit(() -> {
             try {
-                WeaveUpdates.Release release = WeaveUpdates.latest(true);
-                if (!expectedVersion.equals(release.version))
-                    throw new java.io.IOException("Release changed; check updates again");
-                WeaveUpdates.download(this, release, true,
-                        percent -> broadcastFirmwareUpdate("downloading", percent, null));
+                WeaveUpdates.Release release = WeaveUpdates.latest(true, job.preview);
+                if (!job.version.equals(release.version)) throw new java.io.IOException("Release changed; check again");
+                File archive = WeaveUpdates.download(this, release, true, percent -> handler.post(() -> {
+                    if (firmwareJob == job) broadcastFirmwareUpdate("downloading", percent * 15 / 100, null);
+                }));
                 handler.post(() -> {
-                    firmwareDownloading = false;
-                    if (!bleConfirmed || ble == null || !deviceKey.equals(ble.connectedDeviceKey()) ||
-                            firmwareJob != null || firmwareStaging || !ble.isRpcReady()) {
-                        broadcastFirmwareUpdate("error", 0, "Flipper disconnected or busy");
+                    if (firmwareJob != job) return;
+                    job.phase = "staging";
+                    broadcastFirmwareUpdate("staging", 15, null);
+                });
+                File stage = new File(getCacheDir(), "weave-updates/staged-" + job.version);
+                WeaveFirmwarePackage.Prepared prepared = WeaveFirmwarePackage.extract(archive, stage, job.version);
+                handler.post(() -> {
+                    if (firmwareJob != job) return;
+                    if (!firmwareTarget(job)) {
+                        finishFirmwareJob(false, "Flipper disconnected before firmware transfer");
                         return;
                     }
-                    startFirmwareInstall(new Intent(this, WeaveService.class)
-                            .putExtra("version", expectedVersion));
+                    job.packageFiles = prepared;
+                    broadcastFirmwareUpdate("uploading", 15, null);
+                    scheduleFirmware(job, "mkdir_root");
                 });
             } catch (Exception error) {
-                handler.post(() -> {
-                    firmwareDownloading = false;
-                    broadcastFirmwareUpdate("error", 0,
-                            error.getMessage() == null ? "Firmware download failed" : error.getMessage());
-                });
+                handler.post(() -> { if (firmwareJob == job) finishFirmwareJob(false,
+                        error.getMessage() == null ? "Firmware download failed" : error.getMessage()); });
             }
         });
     }
     private void startFirmwareInstall(Intent intent) {
-        String version = intent == null ? null : intent.getStringExtra("version");
-        if (firmwareJob != null || firmwareStaging || version == null || !version.matches("\\d+\\.\\d+\\.\\d+")) {
-            broadcastFirmwareUpdate("error", 0, "An update is already running or version is invalid");
-            return;
-        }
-        if (!bleConfirmed || ble == null || !ble.isRpcReady() || ble.connectedDeviceKey() == null ||
-                remoteInputLocked() || !ble.isIdleForShop()) {
-            broadcastFirmwareUpdate("error", 0, "Flipper is disconnected or busy");
-            return;
-        }
-        String firmwareRaw = prefs.getString(KEY_FIRMWARE, "");
-        java.util.regex.Matcher match = java.util.regex.Pattern.compile("(?i)\\bv?(\\d+\\.\\d+\\.\\d+)\\b")
-                .matcher(firmwareRaw);
-        if (match.find() && WeaveUpdates.compare(match.group(1), version) >= 0) {
-            broadcastFirmwareUpdate("ready", 100, "Flipper firmware is already up to date");
-            return;
-        }
-        String connectedKey = ble.connectedDeviceKey();
-        File archive = new File(getCacheDir(), "weave-updates/weave-firmware.tgz");
-        File stage = new File(getCacheDir(), "weave-updates/staged-" + version);
-        firmwareStaging = true;
-        broadcastFirmwareUpdate("staging", 0, null);
-        new Thread(() -> {
-            try {
-                WeaveFirmwarePackage.Prepared prepared = WeaveFirmwarePackage.extract(archive, stage, version);
-                handler.post(() -> {
-                    firmwareStaging = false;
-                    if (!bleConfirmed || !connectedKey.equals(ble.connectedDeviceKey()) ||
-                            !ble.isIdleForShop() || firmwareJob != null) {
-                        broadcastFirmwareUpdate("error", 0, "Flipper disconnected or became busy");
-                        return;
-                    }
-                    firmwareJob = new FirmwareJob(prepared, version, connectedKey);
-                    firmwareJob.phase = "mkdir_root";
-                    broadcastFirmwareUpdate("uploading", 0, null);
-                    ble.firmwareMkdir("/ext/update", "Firmware Mkdir Root");
-                });
-            } catch (Exception error) {
-                handler.post(() -> {
-                    firmwareStaging = false;
-                    broadcastFirmwareUpdate("error", 0,
-                            error.getMessage() == null ? "Invalid firmware bundle" : error.getMessage());
-                });
-            }
-        }, "Weave-firmware-extract").start();
+        // Aucun chemin non vérifié depuis un ancien cache TGZ.
+        startFirmwareDownloadInstall(intent == null ? null : intent.getStringExtra("version"), null);
     }
     private boolean handleFirmwareOperation(String operation, boolean success, String message) {
+        if ("Firmware Check".equals(operation) || "Firmware Install Result".equals(operation)) {
+            completeFirmwareReply(success);
+            return true;
+        }
+        if (operation == null || !operation.startsWith("Firmware ")) return false;
         FirmwareJob job = firmwareJob;
-        if (job == null || operation == null || !operation.startsWith("Firmware ")) return false;
-        boolean alreadyExists = message != null && message.endsWith(" 6");
-        if ("Firmware Mkdir Root".equals(operation)) {
-            if (!success && !alreadyExists) finishFirmwareJob(false, message);
-            else { job.phase = "mkdir_package"; ble.firmwareMkdir(
-                    job.packageFiles.manifestPath.substring(0,
-                    job.packageFiles.manifestPath.lastIndexOf('/')), "Firmware Mkdir Package"); }
-        } else if ("Firmware Mkdir Package".equals(operation)) {
-            if (!success && !alreadyExists) finishFirmwareJob(false, message);
-            else { job.phase = "uploading"; handler.post(nextFirmwareMember); }
+        if (job == null) return true;
+        if ("Firmware Accept".equals(operation)) {
+            if (success) downloadFirmware(job);
+            else finishFirmwareJob(false, "Could not acknowledge Flipper update request: " + message);
+        } else if ("Firmware Mkdir Root".equals(operation) || "Firmware Mkdir Package".equals(operation)) {
+            if (!success && (message == null || !message.endsWith(" 6"))) finishFirmwareJob(false, message);
+            else scheduleFirmware(job, "Firmware Mkdir Root".equals(operation) ? "mkdir_package" : "uploading");
         } else if ("Firmware Upload".equals(operation)) {
             if (!success) finishFirmwareJob(false, message);
             else {
-                job.index++;
-                broadcastFirmwareUpdate("uploading", Math.min(98,
-                        job.index * 98 / job.packageFiles.files.size()), null);
-                handler.postDelayed(nextFirmwareMember, 250);
+                job.sentBytes += job.packageFiles.files.get(job.index++).size;
+                broadcastFirmwareUpdate("uploading", FirmwareUpdatePolicy.uploadPercent(job.sentBytes,
+                        job.packageFiles.total), null);
+                scheduleFirmware(job, "uploading");
             }
         } else if ("Firmware Prepare".equals(operation)) {
             if (!success) finishFirmwareJob(false, message);
-            else {
-                job.phase = "rebooting";
-                broadcastFirmwareUpdate("rebooting", 100, null);
-                handler.removeCallbacks(firmwareVerifyTimeout);
-                handler.postDelayed(firmwareVerifyTimeout, 300000);
-                ble.rebootForFirmwareUpdate();
-            }
-        } else if ("Firmware Reboot".equals(operation)) {
-            if (!success) finishFirmwareJob(false, message);
-            // Expect a disconnect; success is verified only after a reconnect and version read.
-        }
+            else scheduleFirmware(job, "reboot_pending");
+        } else if ("Firmware Reboot".equals(operation) && !success) finishFirmwareJob(false, message);
         return true;
     }
     private final ArrayDeque<String> queuedDeletes = new ArrayDeque<>();
@@ -459,7 +502,7 @@ public final class WeaveService extends Service {
     private String shopPhase = "";
     /* Pendant un transfert, aucune commande GUI ne doit modifier un ecran non diffuse. */
     private boolean remoteInputLocked() {
-        return firmwareDownloading || firmwareStaging || firmwareJob != null ||
+        return firmwareActive() || pendingFirmwareReply != null || inFlightFirmwareReply != null ||
                 shopNetworkBusy || shopTransferActive || shopVerifying || pendingShopFap != null ||
                 !catalogQueue.isEmpty() || activeCatalogJob != null ||
                 (shopRequestToken != null && ("downloading".equals(shopPhase) ||
@@ -869,7 +912,8 @@ public final class WeaveService extends Service {
     private void drainCatalogQueueNow() {
         handler.removeCallbacks(drainCatalogQueue);
         if (stopping) return;
-        if (firmwareStaging || firmwareJob != null) {
+        if (firmwareActive() || ((pendingFirmwareReply != null || inFlightFirmwareReply != null) &&
+                activeCatalogJob == null && pendingRemoteInstallFinal == null)) {
             if (!catalogQueue.isEmpty()) handler.postDelayed(drainCatalogQueue, 1500);
             return;
         }
@@ -1210,6 +1254,7 @@ public final class WeaveService extends Service {
     private final Runnable networkHeartbeat = new Runnable() {
         @Override public void run() {
             if(stopping) return;
+            if (firmwareActive()) { handler.postDelayed(this, 3000); return; }
             // Un heartbeat ne doit pas bloquer un input ni saturer le RPC GUI.
             long now = android.os.SystemClock.uptimeMillis();
             boolean heartbeatDue = lastNetworkHeartbeatQueuedAt == 0 ||
@@ -1461,55 +1506,79 @@ public final class WeaveService extends Service {
                 .setOnlyAlertOnce(true)
                 .build();
     }
-    private void writeFirmwareCheckResult(byte[] result,int attempt) {
-        if(stopping || !bleConfirmed || ble == null || attempt>12)return;
-        // A delayed reply from a previous Settings visit must not overwrite the
-        // result belonging to a newer check token.
-        String reply = new String(result, java.nio.charset.StandardCharsets.US_ASCII);
-        if(lastFirmwareCheckToken == null || lastFirmwareCheckDevice == null ||
-                !reply.startsWith(lastFirmwareCheckToken + "|") ||
-                !lastFirmwareCheckDevice.equals(ble.connectedDeviceKey())) return;
-        if(ble.isIdleForShop()&&catalogQueue.isEmpty()&&!shopTransferActive)
-            ble.uploadFile(FW_CHECK_RESULT,result,"Firmware Check");
-        else handler.postDelayed(() -> writeFirmwareCheckResult(result,attempt+1),1800);
+    private static final class FirmwareReply {
+        final String device, token, path, label;
+        final byte[] data;
+        final long deadline;
+        int attempts;
+        FirmwareReply(String device, String token, String path, String label, byte[] data) {
+            this.device = device; this.token = token; this.path = path; this.label = label; this.data = data;
+            this.deadline = android.os.SystemClock.elapsedRealtime() + 60000L;
+        }
+    }
+    private FirmwareReply pendingFirmwareReply, inFlightFirmwareReply;
+    private long firmwareCheckNonceAt;
+    private long firmwareConnectionEpoch;
+    private final Runnable firmwareReplyPump = new Runnable() {
+        @Override public void run() {
+            handler.removeCallbacks(this);
+            if (stopping || inFlightFirmwareReply != null) return;
+            FirmwareReply reply = pendingFirmwareReply;
+            if (reply == null) return;
+            if (!bleConfirmed || ble == null || !reply.device.equals(ble.connectedDeviceKey()) ||
+                    !reply.token.equals(lastFirmwareCheckToken) ||
+                    android.os.SystemClock.elapsedRealtime() >= reply.deadline || reply.attempts >= 3) {
+                pendingFirmwareReply = null;
+                if (!firmwareActive() && ble != null) ble.setFirmwarePriority(false);
+                return;
+            }
+            if (firmwareActive() || firmwareConflictingTransaction()) {
+                handler.postDelayed(this, 350);
+                return;
+            }
+            ble.setFirmwarePriority(true);
+            if (!ble.isIdleForFirmware()) { handler.postDelayed(this, 200); return; }
+            pendingFirmwareReply = null;
+            inFlightFirmwareReply = reply;
+            reply.attempts++;
+            ble.uploadFile(reply.path, reply.data, reply.label);
+        }
+    };
+    private void completeFirmwareReply(boolean success) {
+        FirmwareReply reply = inFlightFirmwareReply;
+        inFlightFirmwareReply = null;
+        if (!success && reply != null && pendingFirmwareReply == null) pendingFirmwareReply = reply;
+        if (!firmwareActive() && ble != null) {
+            ble.setFirmwarePriority(false);
+            if (prefs.getBoolean("screen_requested", false)) ble.startScreen();
+        }
+        if (pendingFirmwareReply != null) handler.postDelayed(firmwareReplyPump, success ? 0 : 350);
+    }
+    private void writeFirmwareCheckResult(byte[] result, int attempt) {
+        if (stopping || !bleConfirmed || ble == null || lastFirmwareCheckDevice == null ||
+                !lastFirmwareCheckDevice.equals(ble.connectedDeviceKey()) || lastFirmwareCheckToken == null ||
+                !new String(result, java.nio.charset.StandardCharsets.US_ASCII).startsWith(lastFirmwareCheckToken + "|")) return;
+        pendingFirmwareReply = new FirmwareReply(lastFirmwareCheckDevice, lastFirmwareCheckToken,
+                FW_CHECK_RESULT, "Firmware Check", result);
+        handler.post(firmwareReplyPump);
     }
     private void writeFirmwareInstallResult(String token, String status, int attempt) {
-        if (stopping || !bleConfirmed || ble == null || attempt > 15) return;
-        String device = lastFirmwareCheckDevice;
-        if (device == null || !device.equals(ble.connectedDeviceKey())) return;
-        if (ble.isIdleForShop() && firmwareJob == null && !firmwareStaging &&
-                catalogQueue.isEmpty() && !shopTransferActive) {
-            String result = token + "|" + status;
-            ble.uploadFile(FW_INSTALL_RESULT,
-                    result.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
-                    "Firmware Install Result");
-        } else {
-            handler.postDelayed(() -> writeFirmwareInstallResult(token, status, attempt + 1), 1300);
-        }
+        if (stopping || !bleConfirmed || ble == null || lastFirmwareCheckDevice == null ||
+                !lastFirmwareCheckDevice.equals(ble.connectedDeviceKey()) || !token.equals(lastFirmwareCheckToken)) return;
+        pendingFirmwareReply = new FirmwareReply(lastFirmwareCheckDevice, token, FW_INSTALL_RESULT,
+                "Firmware Install Result", (token + "|" + status).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        handler.post(firmwareReplyPump);
     }
     private void onFlipperFirmwareInstall(byte[] bytes) {
         if (bytes == null || bytes.length < 35 || bytes.length > 112 || ble == null ||
                 !bleConfirmed || !ble.isRpcReady()) return;
-        String request = new String(bytes, java.nio.charset.StandardCharsets.US_ASCII).trim();
-        String[] fields = request.split("\\|", -1);
-        if (fields.length != 3 || !fields[0].matches("[0-9]{1,12}-[0-9]{1,12}") ||
-                !fields[1].matches("\\d+\\.\\d+\\.\\d+") ||
-                !fields[2].matches("[0-9a-f]{24}")) return;
-        String device = ble.connectedDeviceKey();
-        // The nonce is freshly generated when the connected phone answers the
-        // check. A stale SD request cannot authorize an unattended update.
-        if (device == null || !device.equals(lastFirmwareCheckDevice) ||
-                !fields[0].equals(lastFirmwareCheckToken) ||
-                !fields[1].equals(lastFirmwareCheckVersion) ||
-                !fields[2].equals(lastFirmwareCheckNonce) ||
-                fields[2].equals(lastFirmwareInstallNonce)) return;
-        final String token = fields[0], version = fields[1], nonce = fields[2];
-        lastFirmwareInstallNonce = nonce; // Consume once before starting work.
-        if (firmwareDownloading || firmwareJob != null || firmwareStaging || remoteInputLocked()) {
-            writeFirmwareInstallResult(token, "error|busy", 0);
-            return;
-        }
-        startFirmwareDownloadInstall(version, token);
+        String[] fields = new String(bytes, java.nio.charset.StandardCharsets.US_ASCII).trim().split("\\|", -1);
+        if (!FirmwareUpdatePolicy.authorized(fields, ble.connectedDeviceKey(), lastFirmwareCheckDevice,
+                lastFirmwareCheckToken, lastFirmwareCheckVersion, lastFirmwareCheckNonce, lastFirmwareInstallNonce,
+                android.os.SystemClock.elapsedRealtime() - firmwareCheckNonceAt)) return;
+        if (firmwareActive()) return;
+        lastFirmwareInstallNonce = fields[2];
+        startFirmwareDownloadInstall(fields[1], fields[0]);
     }
     private void onFindDeviceRequestRead(byte[] bytes, String error) {
         if (!bleConfirmed || ble == null) return;
@@ -1579,6 +1648,8 @@ public final class WeaveService extends Service {
      * previously raced on BleLink.readId and could starve the keyboard forever.
      * Alternate TextInput and FindDevice; keep firmware release checks alive. */
     private int bridgeProbeIndex;
+    private long lastFirmwareProbeAt;
+    private boolean firmwareProbeInstall;
     private long lastBridgeProbeAt;
     private final Runnable bridgePoll = new Runnable() {
         @Override public void run() {
@@ -1596,7 +1667,15 @@ public final class WeaveService extends Service {
             long minimumProbeGap = lastTextInputToken != null ?
                     (mirroring ? 1300L : 750L) : (mirroring ? 2300L : 750L);
             long userQuietTime = mirroring ? 2200L : 1200L;
-            if(sinceInput >= userQuietTime && now - lastBridgeProbeAt >= minimumProbeGap &&
+            // Les deux mailboxes FW ont un créneau propre, même avec le CLI ou le gateway actifs.
+            if (!firmwareActive() && pendingFirmwareReply == null && inFlightFirmwareReply == null &&
+                    bleConfirmed && ble != null && ble.isIdleForShop() && !firmwareConflictingTransaction() &&
+                    now - lastFirmwareProbeAt >= 3500L) {
+                lastFirmwareProbeAt = now;
+                firmwareProbeInstall = !firmwareProbeInstall;
+                ble.readFile(firmwareProbeInstall ? FW_INSTALL_REQ : FW_CHECK_REQ);
+            } else if(!firmwareActive() && pendingFirmwareReply == null && inFlightFirmwareReply == null &&
+                    sinceInput >= userQuietTime && now - lastBridgeProbeAt >= minimumProbeGap &&
                     pendingFindFlipperToken == null &&
                     bleConfirmed && ble != null && ble.isIdleForShop() &&
                     ringTransferActive == null && !shopTransferActive && !shopNetworkBusy &&
@@ -1607,8 +1686,6 @@ public final class WeaveService extends Service {
                         now-networkEventQueuedAt>3500L && prefs.getBoolean(KEY_GATEWAY,false)
                         ? NetworkMailbox.EVENT_READY : slot == 0 || slot == 2 || slot == 6
                         ? TEXT_INPUT_REQUEST : slot == 3 ? SHOP_REQUEST
-                        : slot == 5 ? FW_CHECK_REQ
-                        : slot == 4 ? FW_INSTALL_REQ
                         : slot == 7 && prefs.getBoolean(KEY_GATEWAY, false)
                         ? NetworkMailbox.REQUEST : FIND_DEVICE_FILE;
                 lastBridgeProbeAt = now;
@@ -1912,7 +1989,7 @@ public final class WeaveService extends Service {
     private final Runnable activateReadyUsb = new Runnable() {
         @Override public void run() {
             if (stopping || !prefs.getBoolean(KEY_ENABLED, false) || !usb.isReady()) return;
-            if (bleConfirmed && !ble.isIdleForShop()) {
+            if (bleConfirmed && (firmwareActive() || !ble.isIdleForShop())) {
                 // Never interrupt a queued FAP upload, CLI session, or pending
                 // operation merely because a USB cable was plugged in.
                 handler.postDelayed(this, 400);
@@ -1990,6 +2067,10 @@ public final class WeaveService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String previousFirmwarePhase = prefs.getString("firmware_update_phase", "");
+        if (FirmwareUpdatePolicy.activePhase(previousFirmwarePhase))
+            prefs.edit().putString("firmware_update_phase", "error")
+                    .putString("firmware_update_message", "Firmware update interrupted; check installed version").apply();
         // A previous Android process cannot leave a valid audible alarm behind.
         prefs.edit().putBoolean(KEY_FIND_RINGING, false).apply();
         restoreCatalogCleanup();
@@ -2036,8 +2117,24 @@ public final class WeaveService extends Service {
                 if (!usbConfirmed) connectBle();
             }
             @Override public void connected(boolean connected) {
-                if (!connected && firmwareJob != null && !"rebooting".equals(firmwareJob.phase))
-                    finishFirmwareJob(false, "Connection lost during firmware transfer");
+                firmwareConnectionEpoch++;
+                if (!connected) {
+                    if (firmwareJob != null && "rebooting".equals(firmwareJob.phase)) {
+                        firmwareJob.disconnectedForReboot = true;
+                        // Libère le transport pour permettre la reconnexion, pas les RPC de fond.
+                        ble.setFirmwarePriority(false);
+                    } else if (firmwareJob != null) finishFirmwareJob(false, "Connection lost during firmware transfer");
+                }
+                // Une nouvelle session invalide les anciens tokens, y compris BLE -> USB.
+                pendingFirmwareReply = null;
+                inFlightFirmwareReply = null;
+                if (!firmwareActive() || !connected) ble.setFirmwarePriority(false);
+                lastFirmwareCheckToken = null;
+                lastFirmwareCheckNonce = null;
+                lastFirmwareCheckVersion = null;
+                lastFirmwareCheckDevice = null;
+                lastFirmwareProbeAt = 0;
+                handler.removeCallbacks(firmwareReplyPump);
                 // Diagnostic: compter les pertes radio, pas les transferts USB.
                 if (!connected && priorBluetoothLink && !ble.isUsbActive())
                     prefs.edit().putInt(KEY_BLE_DROPS,
@@ -2239,12 +2336,14 @@ public final class WeaveService extends Service {
                             lastFirmwareInstallNonce = null;
                             lastFirmwareCheckDevice = ble == null ? null : ble.connectedDeviceKey();
                             final String request = token, device = lastFirmwareCheckDevice;
+                            final boolean preview = prefs.getBoolean(KEY_PREVIEW_UPDATES, false);
+                            final long epoch = firmwareConnectionEpoch;
                             firmwareNetwork.execute(() -> {
                                 String result;
                                 String version = null;
                                 String nonce = null;
                                 try {
-                                    WeaveUpdates.Release release = WeaveUpdates.latest(true);
+                                    WeaveUpdates.Release release = WeaveUpdates.latest(true, preview);
                                     version = release.version;
                                     byte[] random = new byte[12];
                                     new java.security.SecureRandom().nextBytes(random);
@@ -2256,15 +2355,18 @@ public final class WeaveService extends Service {
                                 } catch(WeaveUpdates.AssetPendingException pending) {
                                     result = request + "|error|build pending";
                                 } catch(Exception e) {
-                                    result = request + "|error|release unavailable";
+                                    String detail = e.getMessage();
+                                    result = request + "|error|" + (detail != null && detail.contains("rate limit") ?
+                                            "rate limit" : "release unavailable");
                                 }
                                 final String reply = result, published = version, challenge = nonce;
                                 handler.post(() -> {
-                                    if(!request.equals(lastFirmwareCheckToken) ||
+                                    if(epoch != firmwareConnectionEpoch || !request.equals(lastFirmwareCheckToken) ||
                                             device == null || ble == null ||
                                             !device.equals(ble.connectedDeviceKey())) return;
                                     lastFirmwareCheckVersion = published;
                                     lastFirmwareCheckNonce = challenge;
+                                    firmwareCheckNonceAt = android.os.SystemClock.elapsedRealtime();
                                     writeFirmwareCheckResult(reply.getBytes(
                                             java.nio.charset.StandardCharsets.US_ASCII), 0);
                                 });
@@ -2539,8 +2641,8 @@ public final class WeaveService extends Service {
             @Override public void progress(String operation, int percent) {
                 if ("Firmware Upload".equals(operation) && firmwareJob != null) {
                     FirmwareJob job = firmwareJob;
-                    int value = Math.min(98, (int)(((job.index + percent / 100.0) * 98)
-                            / job.packageFiles.files.size()));
+                    int value = FirmwareUpdatePolicy.uploadPercent(job.sentBytes +
+                            job.packageFiles.files.get(job.index).size * percent / 100, job.packageFiles.total);
                     broadcastFirmwareUpdate("uploading", value, null);
                 }
                 if ("Shop Install".equals(operation) && shopTransferActive && shopRequestToken != null) {
@@ -2568,9 +2670,8 @@ public final class WeaveService extends Service {
                     sendBroadcast(new Intent(EVENT_DEVICE_VERSION).setPackage(getPackageName())
                             .putExtra("version", value));
                     FirmwareJob job = firmwareJob;
-                    if (job != null && "rebooting".equals(job.phase) && value != null &&
-                            job.deviceKey.equals(ble.connectedDeviceKey()) &&
-                            value.matches(".*(?<![0-9])v?" + java.util.regex.Pattern.quote(job.version) + "(?![0-9]).*"))
+                    if (job != null && "rebooting".equals(job.phase) && job.disconnectedForReboot &&
+                            FirmwareUpdatePolicy.verified(job.uid, ble.deviceUid(), job.version, value))
                         finishFirmwareJob(true, "Firmware version verified on Flipper");
                 }
                 else if ("firmware_error".equals(field)) {
@@ -2708,6 +2809,7 @@ public final class WeaveService extends Service {
             lastUsbAttempt = System.currentTimeMillis();
             attemptUsb();
         } else if (ACTION_REFRESH_DEVICE_VERSION.equals(action)) {
+            if (firmwareActive()) return START_STICKY;
             // Settings' update check must NOT depend on scanning, BLE permissions,
             // or whether the transport happens to be USB rather than Bluetooth.
             if (bleConfirmed && ble != null && ble.isRpcReady()) {
@@ -2718,6 +2820,7 @@ public final class WeaveService extends Service {
                         .putExtra("error", "Flipper RPC is not ready"));
             }
         } else if (ACTION_SCAN.equals(action)) {
+            if (firmwareActive()) return START_STICKY;
             if (ble.isConnected()) {
                 // Reading RPC device info also works over USB without BLE permissions.
                 if (!ble.isUsbActive() && hasBlePermission()) ble.refreshInformation();
@@ -2746,6 +2849,7 @@ public final class WeaveService extends Service {
             } // The next completed transfer automatically refreshes verified inventory.
 
         } else if (ACTION_CONNECT_BLE.equals(action)) {
+            if (firmwareActive()) return START_STICKY;
             connectBle();
         } else if (ACTION_START_SCREEN.equals(action)) {
             // The Activity may have moved away before this Intent was handled.
@@ -2931,7 +3035,7 @@ public final class WeaveService extends Service {
                 }
             }
         } else if (ACTION_UPLOAD_FAP.equals(action)) {
-            if (!catalogQueue.isEmpty()) {
+            if (firmwareActive() || !catalogQueue.isEmpty()) {
                 setStatus("An app installation is queued; finish it before manually importing a FAP");
                 return START_STICKY;
             }
@@ -3110,7 +3214,8 @@ public final class WeaveService extends Service {
     }
 
     private void attemptUsb() {
-        if (stopping || usbConfirmed || usb.isOpen() || cli.isRunning() ||
+        if (stopping || (firmwareActive() && !"rebooting".equals(firmwareJob.phase)) ||
+                usbConfirmed || usb.isOpen() || cli.isRunning() ||
                 "Bluetooth".equals(prefs.getString(KEY_MODE, "Auto"))) return;
         List<UsbDevice> candidates = usb.discover();
         if (candidates.isEmpty()) return;
@@ -3273,6 +3378,9 @@ public final class WeaveService extends Service {
         usb.shutdown();
         ble.close();
         network.shutdownNow();
+        handler.removeCallbacks(nextFirmwareMember);
+        handler.removeCallbacks(firmwareVerifyTimeout);
+        handler.removeCallbacks(firmwareReplyPump);
         firmwareNetwork.shutdownNow();
         prefs.edit().putBoolean(KEY_ACTIVE, false).putBoolean(KEY_CONNECTED, false)
                 .putBoolean(KEY_WV1, false).putString(KEY_TRANSPORT, "")
