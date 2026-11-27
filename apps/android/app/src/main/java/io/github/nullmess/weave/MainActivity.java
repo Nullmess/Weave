@@ -4234,28 +4234,6 @@ public final class MainActivity extends Activity {
         updatesRefresh.setOnClickListener(v -> beginGestureRefresh());
         updatesHeader.addView(updatesRefresh, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
-        Switch previewUpdates = new Switch(this);
-        previewUpdates.setText("Include pre-releases");
-        previewUpdates.setTextColor(WHITE);
-        previewUpdates.setTextSize(12);
-        previewUpdates.setChecked(prefs.getBoolean(WeaveService.KEY_PREVIEW_UPDATES, false));
-        previewUpdates.setOnCheckedChangeListener((button, checked) -> {
-            boolean previous = prefs.getBoolean(WeaveService.KEY_PREVIEW_UPDATES, false);
-            if (checked == previous) return;
-            if (FirmwareUpdatePolicy.activePhase(prefs.getString("firmware_update_phase", "")) ||
-                    updateControls[UPDATE_APP].busy || updateControls[UPDATE_FIRMWARE].busy) {
-                button.setChecked(previous);
-                toast("Wait for the current update operation to finish");
-                return;
-            }
-            prefs.edit().putBoolean(WeaveService.KEY_PREVIEW_UPDATES, checked).apply();
-            for (int i = 0; i < 2; i++) {
-                updateControls[i].release = null;
-                updateControls[i].lastCheck = 0;
-                checkUpdate(i);
-            }
-        });
-        root.addView(previewUpdates, new LinearLayout.LayoutParams(-1, -2));
         restoreFirmwareUpdateUi();
         LinearLayout updates = new LinearLayout(this);
         updates.setOrientation(LinearLayout.HORIZONTAL);
@@ -4497,10 +4475,9 @@ public final class MainActivity extends Activity {
         if (afterCheck != null) control.pendingCheckListeners.add(afterCheck);
         control.percent = 0;
         drawUpdateControl(kind);
-        final boolean preview = prefs.getBoolean(WeaveService.KEY_PREVIEW_UPDATES, false);
         new Thread(() -> {
             try {
-                WeaveUpdates.Release release = WeaveUpdates.latest(kind == UPDATE_FIRMWARE, preview);
+                WeaveUpdates.Release release = WeaveUpdates.latest(kind == UPDATE_FIRMWARE);
                 handler.post(() -> {
                     if (epoch != control.releaseCheckEpoch) return; // Superseded by a manual refresh.
                     control.release = release;

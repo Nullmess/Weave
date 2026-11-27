@@ -41,7 +41,6 @@ public final class WeaveService extends Service {
     static final String KEY_ENABLED = "enabled";
     static final String KEY_BOOT = "boot";
     static final String KEY_GATEWAY = "gateway";
-    static final String KEY_PREVIEW_UPDATES = "preview_updates";
     static final String KEY_MODE = "mode";
     static final String KEY_ACTIVE = "active";
     static final String KEY_CONNECTED = "connected";
@@ -172,7 +171,6 @@ public final class WeaveService extends Service {
     private static final class FirmwareJob {
         WeaveFirmwarePackage.Prepared packageFiles;
         final String version, deviceKey, token;
-        final boolean preview;
         long epoch;
         String uid;
         int index;
@@ -180,11 +178,10 @@ public final class WeaveService extends Service {
         String phase = "waiting";
         boolean disconnectedForReboot;
         java.util.concurrent.Future<?> work;
-        FirmwareJob(String version, String deviceKey, String token, boolean preview) {
+        FirmwareJob(String version, String deviceKey, String token) {
             this.version = version;
             this.deviceKey = deviceKey;
             this.token = token;
-            this.preview = preview;
         }
     }
     private FirmwareJob firmwareJob;
@@ -352,8 +349,7 @@ public final class WeaveService extends Service {
             broadcastFirmwareUpdate("error", 0, error);
             return;
         }
-        FirmwareJob job = new FirmwareJob(expectedVersion, ble.connectedDeviceKey(), flipperToken,
-                prefs.getBoolean(KEY_PREVIEW_UPDATES, false));
+        FirmwareJob job = new FirmwareJob(expectedVersion, ble.connectedDeviceKey(), flipperToken);
         job.uid = ble.deviceUid();
         job.epoch = firmwareConnectionEpoch;
         firmwareJob = job;
@@ -367,7 +363,7 @@ public final class WeaveService extends Service {
         broadcastFirmwareUpdate("downloading", 0, null);
         job.work = firmwareNetwork.submit(() -> {
             try {
-                WeaveUpdates.Release release = WeaveUpdates.latest(true, job.preview);
+                WeaveUpdates.Release release = WeaveUpdates.latest(true);
                 if (!job.version.equals(release.version)) throw new java.io.IOException("Release changed; check again");
                 File archive = WeaveUpdates.download(this, release, true, percent -> handler.post(() -> {
                     if (firmwareJob == job) broadcastFirmwareUpdate("downloading", percent * 15 / 100, null);
@@ -2336,14 +2332,13 @@ public final class WeaveService extends Service {
                             lastFirmwareInstallNonce = null;
                             lastFirmwareCheckDevice = ble == null ? null : ble.connectedDeviceKey();
                             final String request = token, device = lastFirmwareCheckDevice;
-                            final boolean preview = prefs.getBoolean(KEY_PREVIEW_UPDATES, false);
                             final long epoch = firmwareConnectionEpoch;
                             firmwareNetwork.execute(() -> {
                                 String result;
                                 String version = null;
                                 String nonce = null;
                                 try {
-                                    WeaveUpdates.Release release = WeaveUpdates.latest(true, preview);
+                                    WeaveUpdates.Release release = WeaveUpdates.latest(true);
                                     version = release.version;
                                     byte[] random = new byte[12];
                                     new java.security.SecureRandom().nextBytes(random);

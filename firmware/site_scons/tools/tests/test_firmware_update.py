@@ -53,7 +53,7 @@ final class FirmwareServiceTest {
 '''.replace('    static class WeaveUpdates {\n        record Release(String version){} // field below matches real class (not record)\n    }','''    static class WeaveUpdates {
         static class Release { final String version; Release(String v){version=v;} }
         static File archive; static String published="1.0.3"; static int downloads;
-        static Release latest(boolean firmware,boolean preview){return new Release(published);}
+        static Release latest(boolean firmware){return new Release(published);}
         static int compare(String a,String b){return FirmwareUpdatePolicy.compare(a,b);}
         static File download(Object owner,Release r,boolean fw,java.util.function.IntConsumer cb){downloads++;cb.accept(100);return archive;}
     }''')
@@ -78,7 +78,7 @@ HARNESS += r'''
     Object pendingShopFap,pendingInstallPath,activeCatalogJob,pendingRemoteInstallFinal,nativeShopHomeToken,shopRequestToken;
     String shopPhase="";
     final Runnable drainCatalogQueue=()->{}, ringDrain=()->{}, shopProcess=()->{};
-    final String EVENT_FIRMWARE_UPDATE="event", KEY_PREVIEW_UPDATES="preview", FW_INSTALL_RESULT="/ext/.weave/fw-install.result", FW_CHECK_RESULT="/ext/.weave/fw-check.result";
+    final String EVENT_FIRMWARE_UPDATE="event", FW_INSTALL_RESULT="/ext/.weave/fw-install.result", FW_CHECK_RESULT="/ext/.weave/fw-check.result";
     String lastFirmwareCheckToken,lastFirmwareCheckVersion,lastFirmwareCheckDevice,lastFirmwareCheckNonce,lastFirmwareInstallNonce;
     File cache;
     FirmwareServiceTest(File cache){this.cache=cache;}

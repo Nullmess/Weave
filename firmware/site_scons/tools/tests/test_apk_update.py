@@ -88,3 +88,11 @@ assert len(rows)==len(exports)==len(dict(rows))
 assert {name:'_Bool' if typ=='bool' else typ for name,typ in rows}==exports
 assert 'ACTION_DELETE' not in flow and 'ALL_USERS' not in flow
 print(f'Developer API: {len(rows)}/{len(exports)} exported functions documented')
+
+# Un seul canal de MAJ, sans option preview ni préférence résiduelle utilisée.
+service = (JAVA / 'WeaveService.java').read_text()
+assert 'Include pre-releases' not in activity
+assert 'KEY_PREVIEW_UPDATES' not in activity + service
+assert 'static Release latest(boolean firmware)' in updates
+assert '"/releases/latest"' in updates and '/releases?per_page=' not in updates
+print('Release channel: stable only')

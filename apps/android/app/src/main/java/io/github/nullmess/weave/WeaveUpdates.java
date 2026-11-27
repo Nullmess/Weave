@@ -21,8 +21,8 @@ final class WeaveUpdates {
     private static final String REPO = "Nullmess/Weave";
     private static final int MAX_JSON = 1_000_000;
     private static final long MAX_ASSET = 250_000_000L;
-    private static final JSONObject[] cachedRelease = new JSONObject[2];
-    private static final long[] cachedAt = new long[2];
+    private static JSONObject cachedRelease;
+    private static long cachedAt;
     static final class AssetPendingException extends IOException {
         final String version;
         AssetPendingException(String version, boolean firmware) {
@@ -94,40 +94,20 @@ final class WeaveUpdates {
         return FirmwareUpdatePolicy.compare(current == null ? null : current.replaceFirst("^[vV]", ""),
                 latest == null ? null : latest.replaceFirst("^[vV]", ""));
     }
-    // Cache séparé par canal. Stable par défaut, previews sur opt-in.
-    private static synchronized JSONObject latestMetadata(boolean preview) throws Exception {
+    // Cache des releases stables.
+    private static synchronized JSONObject latestMetadata() throws Exception {
         long now = android.os.SystemClock.elapsedRealtime();
-        int channel = preview ? 1 : 0;
-        if (cachedRelease[channel] != null && now - cachedAt[channel] < 20_000L) return cachedRelease[channel];
-        HttpURLConnection conn = connect("https://api.github.com/repos/" + REPO +
-                (preview ? "/releases?per_page=100" : "/releases/latest"));
-        String body = new String(read(conn, MAX_JSON, null), StandardCharsets.UTF_8);
-        JSONObject metadata;
-        if (!preview) metadata = new JSONObject(body);
-        else {
-            JSONArray releases = new JSONArray(body);
-            metadata = null;
-            String best = null;
-            for (int i = 0; i < releases.length(); i++) {
-                JSONObject candidate = releases.optJSONObject(i);
-                if (candidate == null || candidate.optBoolean("draft", false)) continue;
-                String version = candidate.optString("tag_name", "").replaceFirst("^[vV]", "");
-                if (!FirmwareUpdatePolicy.validVersion(version)) continue;
-                int order = best == null ? 1 : compare(version, best);
-                if (order > 0 || (order == 0 && metadata != null && metadata.optBoolean("prerelease", false) &&
-                        !candidate.optBoolean("prerelease", false))) {
-                    best = version;
-                    metadata = candidate;
-                }
-            }
-            if (metadata == null) throw new IOException("No published Weave release found");
-        }
-        cachedRelease[channel] = metadata;
-        cachedAt[channel] = android.os.SystemClock.elapsedRealtime();
+        if (cachedRelease != null && now - cachedAt < 20_000L) return cachedRelease;
+        HttpURLConnection conn = connect("https://api.github.com/repos/" + REPO + "/releases/latest");
+        JSONObject metadata = new JSONObject(new String(read(conn, MAX_JSON, null), StandardCharsets.UTF_8));
+        if (metadata.optBoolean("draft", false) || metadata.optBoolean("prerelease", false))
+            throw new IOException("No stable Weave release found");
+        cachedRelease = metadata;
+        cachedAt = android.os.SystemClock.elapsedRealtime();
         return metadata;
     }
-    static Release latest(boolean firmware, boolean preview) throws Exception {
-        JSONObject release = latestMetadata(preview);
+    static Release latest(boolean firmware) throws Exception {
+        JSONObject release = latestMetadata();
         String version = release.optString("tag_name", "").replaceFirst("^[vV]", "");
         if (!FirmwareUpdatePolicy.validVersion(version)) throw new IOException("Release version unavailable");
         JSONArray assets = release.optJSONArray("assets");
