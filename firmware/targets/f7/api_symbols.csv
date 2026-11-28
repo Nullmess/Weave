@@ -1,5 +1,5 @@
 entry,status,name,type,params
-Version,+,89.3,,
+Version,+,89.4,,
 Header,+,applications/drivers/subghz/cc1101_ext/cc1101_ext_interconnect.h,,
 Header,+,applications/services/bt/bt_service/bt.h,,
 Header,+,applications/services/bt/bt_service/bt_keys_storage.h,,
@@ -43,7 +43,11 @@ Header,+,applications/services/power/power_service/power.h,,
 Header,+,applications/services/rpc/rpc_app.h,,
 Header,+,applications/services/storage/storage.h,,
 Header,+,applications/services/weave/weave.h,,
+Header,+,applications/services/weave/weave_ble.h,,
+Header,+,applications/services/weave/weave_keystore.h,,
 Header,+,applications/services/weave/weave_permissions.h,,
+Header,+,applications/services/weave/weave_nfc.h,,
+Header,+,applications/services/weave/weave_platform.h,,
 Header,+,applications/services/weave/weave_security.h,,
 Header,+,applications/services/weave/weave_usb.h,,
 Header,+,lib/bit_lib/bit_lib.h,,
@@ -3895,6 +3899,11 @@ Function,-,vsprintf,int,"char*, const char*, __gnuc_va_list"
 Function,-,vsscanf,int,"const char*, const char*, __gnuc_va_list"
 Function,-,wcstombs,size_t,"char*, const wchar_t*, size_t"
 Function,-,wctomb,int,"char*, wchar_t"
+Function,+,weave_ble_acquire,WeaveBleResult,"void*, const WeaveBleConfig*"
+Function,+,weave_ble_receive,WeaveBleResult,"void*, uint32_t, uint8_t*, uint8_t*, size_t, size_t*"
+Function,+,weave_ble_release,WeaveBleResult,void*
+Function,+,weave_ble_state,WeaveBleResult,"void*, WeaveBleState*"
+Function,+,weave_ble_update,WeaveBleResult,"void*, uint32_t, uint8_t, const uint8_t*, size_t"
 Function,+,weave_context_release,_Bool,"Weave*, void*, uint32_t"
 Function,+,weave_get_transport,WeaveTransport,Weave*
 Function,+,weave_http_get,WeaveStatus,"Weave*, const char*, WeaveCallback, void*"
@@ -3902,9 +3911,21 @@ Function,+,weave_http_request,WeaveStatus,"Weave*, const char*, const char*, con
 Function,+,weave_http_request_ex,WeaveStatus,"Weave*, const char*, const char*, const WeaveHttpHeader*, size_t, const uint8_t*, size_t, WeaveCallback, void*"
 Function,+,weave_http_upload_file,WeaveStatus,"Weave*, const char*, const char*, const char*, WeaveCallback, void*"
 Function,+,weave_http_upload_file_ex,WeaveStatus,"Weave*, const char*, const char*, const WeaveHttpHeader*, size_t, const char*, WeaveCallback, void*"
+Function,+,weave_keystore_decrypt_oaep,WeaveSecurityResult,"const char*, const char*, WeaveKeyAlgorithm, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t, size_t*"
+Function,+,weave_keystore_delete,WeaveSecurityResult,"const char*, const char*"
+Function,+,weave_keystore_derive,WeaveSecurityResult,"const char*, const char*, WeaveKeyAlgorithm, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_keystore_generate,WeaveSecurityResult,"const char*, const char*, WeaveKeyAlgorithm, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_keystore_public,WeaveSecurityResult,"const char*, const char*, WeaveKeyAlgorithm, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_keystore_sign,WeaveSecurityResult,"const char*, const char*, WeaveKeyAlgorithm, const uint8_t*, size_t, _Bool, WeaveDigest, const uint8_t*, size_t, uint8_t*, size_t"
 Function,+,weave_permission_check,_Bool,WeavePermission
 Function,+,weave_permission_has,_Bool,WeavePermission
 Function,+,weave_permission_revoke_self,void,
+Function,+,weave_nfc_acquire,WeaveNfcResult,void*
+Function,+,weave_nfc_receive,WeaveNfcResult,"void*, WeaveNfcRequest*, uint8_t*, size_t"
+Function,+,weave_nfc_release,WeaveNfcResult,void*
+Function,+,weave_nfc_respond,WeaveNfcResult,"void*, uint32_t, const uint8_t*, size_t"
+Function,+,weave_platform_capabilities,uint32_t,
+Function,+,weave_platform_state,uint32_t,Weave*
 Function,+,weave_secret_delete,WeaveSecurityResult,"const char*, const char*"
 Function,+,weave_secret_load,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, uint8_t*, size_t, size_t*"
 Function,+,weave_secret_store,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, const uint8_t*, size_t"

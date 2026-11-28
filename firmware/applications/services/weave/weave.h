@@ -50,7 +50,8 @@ typedef struct {
     const char* name; /* ASCII HTTP field name; forbidden hop-by-hop fields rejected */
     const char* value; /* printable ASCII, without CR or LF */
 } WeaveHttpHeader;
-/* Transport availability notifications. Unsubscribe before releasing a FAP context. */
+/* Transport availability notifications, scoped to the caller app ID.
+ * Subscribe/unsubscribe from the owning application thread. */
 typedef void (*WeaveTransportCallback)(WeaveTransport transport, void* context);
 /* Push data from a watched TCP/UDP/WebSocket session. Large events are
  * delivered in 512-byte chunks. `data` is borrowed during the callback. */
@@ -110,6 +111,9 @@ void weave_socket_unsubscribe_events(Weave* weave, WeaveSocketEventCallback cb, 
  * Returns false on timeout; in that case, the caller MUST retain its context
  * and loaded code until a subsequent call returns true.
  * All callbacks belonging to one FAP should use the SAME unique context.
+ * The loader additionally detaches all app-owned callbacks before freeing mapped
+ * code; this cannot protect contexts the FAP has already freed. Stop other
+ * submitting threads before explicit release and never block a callback on unload.
  */
 bool weave_context_release(Weave* weave, void* context, uint32_t timeout_ms);
 

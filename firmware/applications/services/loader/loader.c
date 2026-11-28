@@ -9,6 +9,9 @@
 #include <toolbox/path.h>
 #include <flipper_application/flipper_application.h>
 #include <loader/firmware_api/firmware_api.h>
+#ifdef SRV_WEAVE
+#include <weave/weave_internal.h>
+#endif
 
 #define TAG "Loader"
 
@@ -778,7 +781,35 @@ static void loader_do_app_closed(Loader* loader) {
     }
 
     if(loader->app.fap) {
+#ifdef SRV_WEAVE
+        FuriString* appid = furi_string_alloc();
+        path_extract_filename_no_ext(furi_string_get_cstr(loader->app.launch_path), appid);
+        const char* id = furi_string_get_cstr(appid);
+        Weave* network = NULL;
+        if(*id && strlen(id) < 64 && furi_record_exists(RECORD_WEAVE)) {
+            network = furi_record_open(RECORD_WEAVE);
+            /* Never unload mapped code while a Weave callback is active.
+             * A broken callback can stall unload; freeing it would be unsafe. */
+            while(!weave_network_release_owner(network, id, 1000)) {
+                FURI_LOG_E(TAG, "Waiting for Weave network callbacks to return");
+            }
+        }
+        if(!weave_usb_release_app(furi_string_get_cstr(appid))) {
+            FURI_LOG_E(TAG, "Weave USB lease restoration failed");
+        }
+        if(!weave_ble_release_app(furi_string_get_cstr(appid))) {
+            FURI_LOG_E(TAG, "Weave BLE lease restoration failed");
+        }
+        (void)weave_nfc_release_app(furi_string_get_cstr(appid));
+#endif
         flipper_application_free(loader->app.fap);
+#ifdef SRV_WEAVE
+        if(network) {
+            weave_network_finish_owner(network,id);
+            furi_record_close(RECORD_WEAVE);
+        }
+        furi_string_free(appid);
+#endif
         loader->app.fap = NULL;
         loader->app.thread = NULL;
     } else {

@@ -1,3 +1,4 @@
+#include "weave_internal.h"
 /* Weave Network WN2 over official USB/BLE Storage RPC.
  * The companion explicitly opts in and renews a leased heartbeat.
  * Requests and replies are complete binary files. The response.ready marker
@@ -445,6 +446,8 @@ static int32_t wn_thread(void* context) {
         }
         weave_ble_cli_poll(storage);
         weave_ringtone_reap_idle();
+        weave_usb_reap_orphan();
+        weave_ble_reap_orphan();
         furi_delay_ms(WN_POLL_MS);
     }
     return 0;

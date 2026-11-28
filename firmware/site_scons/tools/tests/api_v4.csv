@@ -1,0 +1,81 @@
+entry,status,name,type,params
+Header,+,applications/services/weave/weave.h,,
+Header,+,applications/services/weave/weave_permissions.h,,
+Header,+,applications/services/weave/weave_security.h,,
+Header,+,applications/services/weave/weave_usb.h,,
+Function,+,weave_context_release,_Bool,"Weave*, void*, uint32_t"
+Function,+,weave_get_transport,WeaveTransport,Weave*
+Function,+,weave_http_get,WeaveStatus,"Weave*, const char*, WeaveCallback, void*"
+Function,+,weave_http_request,WeaveStatus,"Weave*, const char*, const char*, const uint8_t*, size_t, WeaveCallback, void*"
+Function,+,weave_http_request_ex,WeaveStatus,"Weave*, const char*, const char*, const WeaveHttpHeader*, size_t, const uint8_t*, size_t, WeaveCallback, void*"
+Function,+,weave_http_upload_file,WeaveStatus,"Weave*, const char*, const char*, const char*, WeaveCallback, void*"
+Function,+,weave_http_upload_file_ex,WeaveStatus,"Weave*, const char*, const char*, const WeaveHttpHeader*, size_t, const char*, WeaveCallback, void*"
+Function,+,weave_permission_check,_Bool,WeavePermission
+Function,+,weave_permission_has,_Bool,WeavePermission
+Function,+,weave_permission_revoke_self,void,
+Function,+,weave_secret_delete,WeaveSecurityResult,"const char*, const char*"
+Function,+,weave_secret_load,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, uint8_t*, size_t, size_t*"
+Function,+,weave_secret_store,WeaveSecurityResult,"const char*, const char*, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_aead_decrypt,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t[16], uint8_t*"
+Function,+,weave_security_aead_decrypt_hw,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t[16], uint8_t*"
+Function,+,weave_security_aead_encrypt,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, uint8_t[16]"
+Function,+,weave_security_aead_encrypt_hw,_Bool,"const uint8_t[32], const uint8_t[12], const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, uint8_t[16]"
+Function,+,weave_security_aead_hw_selftest,_Bool,
+Function,+,weave_security_aes_cbc,_Bool,"_Bool, const uint8_t*, size_t, const uint8_t*, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_aes_ecb,_Bool,"_Bool, const uint8_t*, size_t, const uint8_t*, uint8_t*"
+Function,+,weave_security_api_version,uint32_t,
+Function,+,weave_security_digest,_Bool,"WeaveDigest, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_digest_size,size_t,WeaveDigest
+Function,+,weave_security_ec_generate,_Bool,"WeaveCurve, uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ec_public,_Bool,"WeaveCurve, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ecdh,_Bool,"WeaveCurve, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ecdsa_sign,_Bool,"WeaveCurve, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ecdsa_verify,_Bool,"WeaveCurve, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_ed25519_generate,_Bool,"uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519_public,_Bool,"const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519_sign,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519_verify,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_ed25519ph_sign,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_ed25519ph_verify,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_equal,_Bool,"const uint8_t*, const uint8_t*, size_t"
+Function,+,weave_security_hkdf_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_hmac,_Bool,"WeaveDigest, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_hmac_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t[32]"
+Function,+,weave_security_hmac_sha256_clear,void,WeaveSecurityHmacSha256Context*
+Function,+,weave_security_hmac_sha256_compute,_Bool,"const WeaveSecurityHmacSha256Context*, const uint8_t*, size_t, uint8_t[32]"
+Function,+,weave_security_hmac_sha256_init,_Bool,"WeaveSecurityHmacSha256Context*, const uint8_t*, size_t"
+Function,+,weave_security_job_begin_hmac_sha256,_Bool,"WeaveSecurityJob*, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_job_begin_pbkdf2,_Bool,"WeaveSecurityJob*, const uint8_t*, size_t, const uint8_t*, size_t, uint32_t, size_t"
+Function,+,weave_security_job_begin_sha256,_Bool,"WeaveSecurityJob*, const uint8_t*, size_t"
+Function,+,weave_security_job_cancel,void,WeaveSecurityJob*
+Function,+,weave_security_job_progress,_Bool,"const WeaveSecurityJob*, uint64_t*, uint64_t*"
+Function,+,weave_security_job_result,_Bool,"WeaveSecurityJob*, uint8_t*, size_t"
+Function,+,weave_security_job_step,WeaveSecurityJobState,"WeaveSecurityJob*, uint32_t"
+Function,+,weave_security_pbkdf2_sha256,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint32_t, uint8_t*, size_t"
+Function,+,weave_security_random,_Bool,"uint8_t*, size_t"
+Function,+,weave_security_rsa_generate,_Bool,"uint16_t, uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_oaep_decrypt,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t, size_t*"
+Function,+,weave_security_rsa_oaep_encrypt,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_private_block,_Bool,"const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_public,_Bool,"const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_sign,_Bool,"_Bool, WeaveDigest, const uint8_t*, size_t, const uint8_t*, size_t, uint8_t*, size_t"
+Function,+,weave_security_rsa_verify,_Bool,"_Bool, WeaveDigest, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t"
+Function,+,weave_security_sha256,_Bool,"const uint8_t*, size_t, uint8_t[32]"
+Function,+,weave_security_wipe,void,"void*, size_t"
+Function,+,weave_socket_close,WeaveStatus,"Weave*, WeaveSocketType, uint16_t, WeaveCallback, void*"
+Function,+,weave_socket_open,WeaveStatus,"Weave*, WeaveSocketType, const char*, uint16_t, WeaveCallback, void*"
+Function,+,weave_socket_receive,WeaveStatus,"Weave*, WeaveSocketType, uint16_t, WeaveCallback, void*"
+Function,+,weave_socket_send,WeaveStatus,"Weave*, WeaveSocketType, uint16_t, const uint8_t*, size_t, WeaveCallback, void*"
+Function,+,weave_socket_subscribe_events,_Bool,"Weave*, WeaveSocketEventCallback, void*"
+Function,+,weave_socket_unsubscribe_events,void,"Weave*, WeaveSocketEventCallback, void*"
+Function,+,weave_socket_watch,WeaveStatus,"Weave*, WeaveSocketType, uint16_t, _Bool, WeaveCallback, void*"
+Function,+,weave_transport_subscribe,_Bool,"Weave*, WeaveTransportCallback, void*"
+Function,+,weave_transport_unsubscribe,void,"Weave*, WeaveTransportCallback, void*"
+Function,+,weave_usb_acquire,WeaveUsbResult,"void*, WeaveUsbMode"
+Function,+,weave_usb_acquire_ex,WeaveUsbResult,"void*, WeaveUsbMode, const uint8_t*, size_t, uint8_t"
+Function,+,weave_usb_ccid_notify,WeaveUsbResult,"void*, _Bool"
+Function,+,weave_usb_cdc_available,_Bool,
+Function,+,weave_usb_connected,_Bool,void*
+Function,+,weave_usb_receive,WeaveUsbResult,"void*, WeaveUsbChannel, uint8_t*, size_t, size_t*"
+Function,+,weave_usb_release,WeaveUsbResult,void*
+Function,+,weave_usb_transmit,WeaveUsbResult,"void*, WeaveUsbChannel, const uint8_t*, size_t"

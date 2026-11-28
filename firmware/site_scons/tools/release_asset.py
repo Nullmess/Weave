@@ -58,8 +58,8 @@ def validate_sdk(path: Path, version: str) -> None:
         import csv, io
         rows = list(csv.DictReader(io.StringIO(archive.read(symbols[0]).decode())))
         version_row = next((r for r in rows if r["entry"] == "Version"), None)
-        if not version_row or version_row["name"] != "89.3" or version_row["status"] != "+":
-            raise PackageError("Expected approved SDK ABI 89.3")
+        if not version_row or version_row["name"] != "89.4" or version_row["status"] != "+":
+            raise PackageError("Expected approved SDK ABI 89.4")
         # Reject any stale or incomplete symbol table, including disabled exports.
         source = Path(__file__).resolve().parents[2] / "targets/f7/api_symbols.csv"
         with source.open(newline="", encoding="utf-8") as stream:

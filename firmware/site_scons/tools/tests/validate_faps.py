@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install an actual Weave SDK in an isolated uFBT state; build API v3/v4 smoke FAPs.
+"""Install an actual Weave SDK in an isolated uFBT state; build API v3/v4 and platform smoke FAPs.
 No flash, no permanent SDK changes. --launch explicitly uploads and starts one test.
 With --legacy-sdk, build the v3 FAP with an actual earlier SDK (canonical scripts/ layout).
 A successful build validates APPCHK, not physical execution. Record the PASS dialog separately.
@@ -21,12 +21,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sdk', type=Path, required=True)
     parser.add_argument('--legacy-sdk', type=Path)
-    parser.add_argument('--launch', choices=('v3', 'v4'))
+    parser.add_argument('--launch', choices=('v3', 'v4', 'platform'))
     parser.add_argument('--port', default='auto')
     args = parser.parse_args()
     sdk = args.sdk.resolve(strict=True)
     legacy = args.legacy_sdk.resolve(strict=True) if args.legacy_sdk else sdk
-    validate_sdk(sdk, '1.0.3')
+    validate_sdk(sdk, (HERE.parents[3] / 'VERSION').read_text().strip())
     ufbt = shutil.which('ufbt')
     if not ufbt:
         parser.error('uFBT executable missing; install ufbt in a virtual environment or pipx')
@@ -38,7 +38,7 @@ def main():
         for key in ('UFBT_STATE_DIR', 'UFBT_SCRIPT_DIR'):
             env.pop(key, None)
         installed = None
-        for version in ('v3', 'v4'):
+        for version in ('v3', 'v4', 'platform'):
             archive = legacy if version == 'v3' else sdk
             if archive != installed:
                 subprocess.run([ufbt, 'update', '--hw-target=f7', f'--local={archive}'], env=env, check=True)
@@ -50,8 +50,9 @@ def main():
                 f'App(appid="{appid}", name="Weave Smoke {version}", '
                 'apptype=FlipperAppType.EXTERNAL, entry_point="weave_smoke_app", '
                 'stack_size=4096, fap_category="Tools")\n', encoding='utf-8')
-            (project / 'smoke.c').write_text('#define SMOKE_V4 '+str(int(version=='v4'))+'\n'+
-                                               (HERE/'security_smoke.c').read_text(), encoding='utf-8')
+            source = ((HERE/'platform_smoke.c').read_text() if version == 'platform' else
+                      '#define SMOKE_V4 '+str(int(version=='v4'))+'\n'+(HERE/'security_smoke.c').read_text())
+            (project / 'smoke.c').write_text(source, encoding='utf-8')
             cmd = [ufbt, 'STRICT_FAP_IMPORT_CHECK=1']
             subprocess.run(cmd, cwd=project, env=env, check=True)
             fap = project/'dist'/f'{appid}.fap'

@@ -92,7 +92,10 @@ class SdkTest(unittest.TestCase):
             previous=list(csv.DictReader(stream))
         current={tuple(sorted(r.items())) for r in rows}
         self.assertTrue(all(tuple(sorted(r.items())) in current for r in previous))
-        print(f'Previous Weave ABI signatures retained: {len(previous)}')
+        with (Path(__file__).parent/'api_v4.csv').open() as stream:
+            v4=list(csv.DictReader(stream))
+        self.assertTrue(all(tuple(sorted(r.items())) in current for r in v4))
+        print(f'Previous Weave ABI signatures retained: v3={len(previous)}, v4={len(v4)}')
         names=[r['name'] for r in entries]
         self.assertEqual(len(names),len(set(names)))
         hashes=[gnu_sym_hash(n) for n in names]

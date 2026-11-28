@@ -2,6 +2,7 @@
 
 #include <furi.h>
 #include <nfc/protocols/nfc_listener_base.h>
+#include <nfc/protocols/iso14443_3a/iso14443_3a_listener_i.h>
 
 #define TAG "Iso14443_4aListener"
 
@@ -14,6 +15,8 @@ static Iso14443_4aListener*
     Iso14443_4aListener* instance = malloc(sizeof(Iso14443_4aListener));
     instance->iso14443_3a_listener = iso14443_3a_listener;
     instance->data = data;
+    instance->peer_frame_size = 16;
+    instance->raw_blocks = false;
     instance->iso14443_4_layer = iso14443_4_layer_alloc();
 
     instance->rx_buffer = bit_buffer_alloc(ISO14443_4A_LISTENER_BUF_SIZE);
@@ -38,6 +41,7 @@ static void iso14443_4a_listener_free(Iso14443_4aListener* instance) {
 
 static void iso14443_4a_listener_reset(Iso14443_4aListener* instance) {
     instance->state = Iso14443_4aListenerStateIdle;
+    instance->peer_frame_size = 16;
     iso14443_4_layer_reset(instance->iso14443_4_layer);
 }
 
@@ -65,13 +69,19 @@ static NfcCommand iso14443_4a_listener_run(NfcGenericEvent event, void* context)
 
     Iso14443_4aListener* instance = context;
     Iso14443_3aListenerEvent* iso14443_3a_event = event.event_data;
-    BitBuffer* rx_buffer = iso14443_3a_event->data->buffer;
+    BitBuffer* rx_buffer = NULL;
+    if(iso14443_3a_event->type == Iso14443_3aListenerEventTypeReceivedStandardFrame)
+        rx_buffer = iso14443_3a_event->data->buffer;
     NfcCommand command = NfcCommandContinue;
 
     if(iso14443_3a_event->type == Iso14443_3aListenerEventTypeReceivedStandardFrame) {
         if(instance->state == Iso14443_4aListenerStateIdle) {
             if(bit_buffer_get_size_bytes(rx_buffer) == 2 &&
                bit_buffer_get_byte(rx_buffer, 0) == ISO14443_4A_CMD_READ_ATS) {
+                static const uint16_t frame_sizes[] = {16,24,32,40,48,64,96,128,256};
+                const uint8_t fsdi = bit_buffer_get_byte(rx_buffer, 1) >> 4;
+                if(fsdi >= COUNT_OF(frame_sizes)) return NfcCommandContinue;
+                instance->peer_frame_size = frame_sizes[fsdi];
                 if(iso14443_4a_listener_send_ats(instance, &instance->data->ats_data) ==
                    Iso14443_4aErrorNone) {
                     instance->state = Iso14443_4aListenerStateActive;
@@ -86,6 +96,13 @@ static NfcCommand iso14443_4a_listener_run(NfcGenericEvent event, void* context)
                         iso14443_4a_supports_frame_option(
                             instance->data, Iso14443_4aFrameOptionNad));
                 }
+            }
+        } else if(instance->raw_blocks) {
+            if(instance->callback) {
+                instance->iso14443_4a_event.type = Iso14443_4aListenerEventTypeReceivedData;
+                instance->iso14443_4a_event.data->buffer = rx_buffer;
+                command = instance->callback(instance->generic_event, instance->context);
+                if(command == NfcCommandSleep) iso14443_4a_listener_reset(instance);
             }
         } else {
             Iso14443_4LayerResult status = iso14443_4_layer_decode_command(
@@ -136,3 +153,14 @@ const NfcListenerBase nfc_listener_iso14443_4a = {
     .get_data = (NfcListenerGetData)iso14443_4a_listener_get_data,
     .run = (NfcListenerRun)iso14443_4a_listener_run,
 };
+
+/* Internal broker accessor, valid inside the NFC callback only. */
+uint16_t iso14443_4a_listener_peer_frame_size(const Iso14443_4aListener* instance) {
+    return instance->peer_frame_size;
+}
+
+/* Internal, not SDK exports. Configure before starting the listener. */
+void iso14443_4a_listener_enable_raw(Iso14443_4aListener* instance) { instance->raw_blocks=true; }
+bool iso14443_4a_listener_send_raw(Iso14443_4aListener* instance,const BitBuffer* frame) {
+    return instance->raw_blocks && iso14443_3a_listener_send_standard_frame(instance->iso14443_3a_listener,frame)==Iso14443_3aErrorNone;
+}

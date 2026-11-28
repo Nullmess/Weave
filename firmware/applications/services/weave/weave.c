@@ -1,5 +1,6 @@
 #include "weave_permissions.h"
 #include "weave_i.h"
+#include "weave_internal.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -36,7 +37,7 @@ void weave_queue_release_if_idle_locked(Weave* weave) {
 /* Queues a best-effort remote CLOSE for sockets owned by an unloaded FAP.
  * Call only while holding the Weave mutex. The worker never runs FAP code
  * for these cleanup requests. */
-static void weave_flush_cleanup_locked(Weave* weave) {
+void weave_flush_cleanup_locked(Weave* weave) {
     if(weave->closing_count && weave->queue_count < WEAVE_QUEUE_MAX &&
        weave->transport != WeaveTransportNone &&
        !weave_queue_reserve_locked(weave)) return;
@@ -61,11 +62,11 @@ static void weave_flush_cleanup_locked(Weave* weave) {
 
 /* Release may race with a callback already selected for invocation.
  * Accounting happens under weave->mutex before the callback is dispatched. */
-void weave_callback_started_locked(Weave* weave, void* context) {
+void weave_callback_started_locked(Weave* weave, void* context, const char* appid) {
     WeaveActiveCallback* free_slot = NULL;
     for(size_t i = 0; i < COUNT_OF(weave->callbacks_by_context); i++) {
         WeaveActiveCallback* slot = &weave->callbacks_by_context[i];
-        if(slot->count && slot->context == context) {
+        if(slot->count && slot->context == context && !strcmp(slot->appid, appid)) {
             furi_check(slot->count != UINT16_MAX);
             slot->count++;
             weave->callbacks_active++;
@@ -75,17 +76,18 @@ void weave_callback_started_locked(Weave* weave, void* context) {
     }
     furi_check(free_slot);
     free_slot->context = context;
+    strcpy(free_slot->appid, appid);
     free_slot->count = 1;
     weave->callbacks_active++;
 }
-void weave_callback_finished(Weave* weave, void* context) {
+void weave_callback_finished(Weave* weave, void* context, const char* appid) {
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
     furi_check(weave->callbacks_active != 0);
     bool found = false;
     for(size_t i = 0; i < COUNT_OF(weave->callbacks_by_context); i++) {
         WeaveActiveCallback* slot = &weave->callbacks_by_context[i];
-        if(slot->count && slot->context == context) {
-            if(--slot->count == 0) slot->context = NULL;
+        if(slot->count && slot->context == context && !strcmp(slot->appid, appid)) {
+            if(--slot->count == 0) *slot = (WeaveActiveCallback){0};
             weave->callbacks_active--;
             found = true;
             break;
@@ -95,15 +97,26 @@ void weave_callback_finished(Weave* weave, void* context) {
     furi_mutex_release(weave->mutex);
 }
 
-bool weave_context_release(Weave* weave, void* context, uint32_t timeout_ms) {
-    if(!weave || !context) return false;
-    furi_mutex_acquire(weave->mutex, FuriWaitForever);
+/* appid scopes even NULL/reused contexts to the submitting application.
+ * Keep a dispatched request until its reply/timeout, so a late OPEN success
+ * can still be closed remotely without calling into an unloaded FAP. */
+static bool owner_matches(const char* owner, void* value, const char* appid,
+                          void* context, bool all) {
+    return !strcmp(owner, appid) && (all || value == context);
+}
+static void detach_locked(Weave* weave, const char* appid, void* context, bool all) {
     size_t kept = 0;
     for(size_t i = 0; i < weave->queue_count; i++) {
-        if(weave->queue[i].context != context) {
-            if(kept != i) weave->queue[kept] = weave->queue[i];
-            kept++;
+        WeaveOperation* op = &weave->queue[i];
+        if(owner_matches(op->appid, op->context, appid, context, all)) {
+            if(!op->dispatched) continue;
+            op->callback = NULL;
+            op->context = NULL;
+            op->appid[0] = 0;
+            op->detached = true;
         }
+        if(kept != i) weave->queue[kept] = *op;
+        kept++;
     }
     if(weave->queue) {
         for(size_t i = kept; i < WEAVE_QUEUE_MAX; i++)
@@ -111,36 +124,66 @@ bool weave_context_release(Weave* weave, void* context, uint32_t timeout_ms) {
     }
     weave->queue_count = kept;
     for(size_t i = 0; i < COUNT_OF(weave->sessions); i++) {
-        if(weave->sessions[i].id && weave->sessions[i].owner == context) {
-            if(weave->closing_count < COUNT_OF(weave->closing_sessions))
-                weave->closing_sessions[weave->closing_count++] = weave->sessions[i];
-            weave->sessions[i] = (WeaveTrackedSession){0};
+        WeaveTrackedSession* session = &weave->sessions[i];
+        if(session->id && owner_matches(session->appid, session->owner, appid, context, all)) {
+            /* OPEN admission reserves one slot for every live/pending socket. */
+            furi_check(weave->closing_count < COUNT_OF(weave->closing_sessions));
+            WeaveTrackedSession* closing = &weave->closing_sessions[weave->closing_count++];
+            *closing = *session;
+            closing->owner = NULL;
+            closing->appid[0] = 0;
+            *session = (WeaveTrackedSession){0};
         }
     }
     weave_flush_cleanup_locked(weave);
     weave_queue_release_if_idle_locked(weave);
     for(size_t i = 0; i < COUNT_OF(weave->listeners); i++)
-        if(weave->listeners[i].context == context)
+        if(owner_matches(weave->listeners[i].appid, weave->listeners[i].context, appid, context, all))
             weave->listeners[i] = (WeaveTransportListener){0};
     for(size_t i = 0; i < COUNT_OF(weave->socket_listeners); i++)
-        if(weave->socket_listeners[i].context == context)
+        if(owner_matches(weave->socket_listeners[i].appid, weave->socket_listeners[i].context, appid, context, all))
             weave->socket_listeners[i] = (WeaveSocketEventListener){0};
-    furi_mutex_release(weave->mutex);
-
+}
+static bool wait_owner(Weave* weave, const char* appid, void* context, bool all, uint32_t timeout_ms) {
     const uint32_t start = furi_get_tick();
     for(;;) {
         furi_mutex_acquire(weave->mutex, FuriWaitForever);
         bool idle = true;
         for(size_t i = 0; i < COUNT_OF(weave->callbacks_by_context); i++) {
             const WeaveActiveCallback* slot = &weave->callbacks_by_context[i];
-            if(slot->count && slot->context == context) { idle = false; break; }
+            if(slot->count && owner_matches(slot->appid, slot->context, appid, context, all)) {
+                idle = false; break;
+            }
         }
         furi_mutex_release(weave->mutex);
         if(idle) return true;
-        if((uint32_t)(furi_get_tick() - start) >= furi_ms_to_ticks(timeout_ms))
-            return false;
+        if((uint32_t)(furi_get_tick() - start) >= furi_ms_to_ticks(timeout_ms)) return false;
         furi_delay_ms(1);
     }
+}
+bool weave_context_release(Weave* weave, void* context, uint32_t timeout_ms) {
+    const char* appid = weave_caller_appid();
+    if(!weave || !context || !appid) return false;
+    furi_mutex_acquire(weave->mutex, FuriWaitForever);
+    detach_locked(weave, appid, context, false);
+    furi_mutex_release(weave->mutex);
+    return wait_owner(weave, appid, context, false, timeout_ms);
+}
+bool weave_network_release_owner(Weave* weave, const char* appid, uint32_t timeout_ms) {
+    if(!weave || !appid || !*appid || strlen(appid)>=WEAVE_OWNER_SIZE) return false;
+    furi_mutex_acquire(weave->mutex, FuriWaitForever);
+    if(weave->draining_app[0] && strcmp(weave->draining_app, appid)) {
+        furi_mutex_release(weave->mutex); return false;
+    }
+    strcpy(weave->draining_app, appid);
+    detach_locked(weave, appid, NULL, true);
+    furi_mutex_release(weave->mutex);
+    return wait_owner(weave, appid, NULL, true, timeout_ms);
+}
+void weave_network_finish_owner(Weave* weave, const char* appid) {
+    furi_mutex_acquire(weave->mutex, FuriWaitForever);
+    if(!strcmp(weave->draining_app, appid)) weave->draining_app[0] = 0;
+    furi_mutex_release(weave->mutex);
 }
 
 static bool safe_field(const char* value, size_t max) {
@@ -172,17 +215,22 @@ void weave_reset(Weave* weave) {
     weave_queue_release_if_idle_locked(weave);
 }
 bool weave_transport_subscribe(Weave* weave, WeaveTransportCallback cb, void* ctx) {
-    if(!weave || !cb) return false;
+    const char* appid = weave_caller_appid();
+    if(!weave || !cb || !appid) return false;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
+    if(!strcmp(weave->draining_app, appid)) {
+        furi_mutex_release(weave->mutex); return false;
+    }
     for(size_t i = 0; i < COUNT_OF(weave->listeners); i++) {
-        if(weave->listeners[i].callback == cb && weave->listeners[i].context == ctx) {
+        if(weave->listeners[i].callback == cb && weave->listeners[i].context == ctx && !strcmp(weave->listeners[i].appid, appid)) {
             furi_mutex_release(weave->mutex);
             return true;
         }
     }
     for(size_t i = 0; i < COUNT_OF(weave->listeners); i++) {
         if(!weave->listeners[i].callback) {
-            weave->listeners[i] = (WeaveTransportListener){cb, ctx};
+            weave->listeners[i] = (WeaveTransportListener){.callback=cb,.context=ctx};
+            strcpy(weave->listeners[i].appid, appid);
             furi_mutex_release(weave->mutex);
             return true;
         }
@@ -191,10 +239,11 @@ bool weave_transport_subscribe(Weave* weave, WeaveTransportCallback cb, void* ct
     return false;
 }
 void weave_transport_unsubscribe(Weave* weave, WeaveTransportCallback cb, void* ctx) {
-    if(!weave || !cb) return;
+    const char* appid = weave_caller_appid();
+    if(!weave || !cb || !appid) return;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
     for(size_t i = 0; i < COUNT_OF(weave->listeners); i++) {
-        if(weave->listeners[i].callback == cb && weave->listeners[i].context == ctx)
+        if(weave->listeners[i].callback == cb && weave->listeners[i].context == ctx && !strcmp(weave->listeners[i].appid, appid))
             weave->listeners[i] = (WeaveTransportListener){0};
     }
     furi_mutex_release(weave->mutex);
@@ -207,18 +256,23 @@ WeaveTransport weave_get_transport(Weave* weave) {
     return transport;
 }
 bool weave_socket_subscribe_events(Weave* weave, WeaveSocketEventCallback cb, void* ctx) {
-    if(!weave || !cb) return false;
+    const char* appid = weave_caller_appid();
+    if(!weave || !cb || !appid) return false;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
+    if(!strcmp(weave->draining_app, appid)) {
+        furi_mutex_release(weave->mutex); return false;
+    }
     for(size_t i = 0; i < COUNT_OF(weave->socket_listeners); i++) {
         if(weave->socket_listeners[i].callback == cb &&
-           weave->socket_listeners[i].context == ctx) {
+           weave->socket_listeners[i].context == ctx && !strcmp(weave->socket_listeners[i].appid, appid)) {
             furi_mutex_release(weave->mutex);
             return true;
         }
     }
     for(size_t i = 0; i < COUNT_OF(weave->socket_listeners); i++) {
         if(!weave->socket_listeners[i].callback) {
-            weave->socket_listeners[i] = (WeaveSocketEventListener){cb,ctx};
+            weave->socket_listeners[i] = (WeaveSocketEventListener){.callback=cb,.context=ctx};
+            strcpy(weave->socket_listeners[i].appid, appid);
             furi_mutex_release(weave->mutex);
             return true;
         }
@@ -227,11 +281,12 @@ bool weave_socket_subscribe_events(Weave* weave, WeaveSocketEventCallback cb, vo
     return false;
 }
 void weave_socket_unsubscribe_events(Weave* weave, WeaveSocketEventCallback cb, void* ctx) {
-    if(!weave || !cb) return;
+    const char* appid = weave_caller_appid();
+    if(!weave || !cb || !appid) return;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
     for(size_t i = 0; i < COUNT_OF(weave->socket_listeners); i++)
         if(weave->socket_listeners[i].callback == cb &&
-           weave->socket_listeners[i].context == ctx)
+           weave->socket_listeners[i].context == ctx && !strcmp(weave->socket_listeners[i].appid, appid))
             weave->socket_listeners[i] = (WeaveSocketEventListener){0};
     furi_mutex_release(weave->mutex);
 }
@@ -245,10 +300,12 @@ static WeaveStatus submit(Weave* weave, const char* verb, const char* target,
                         !strncmp(verb, "WS_", 3);
     const WeavePermission permission = file_path ? WeavePermissionUpload :
         socket ? WeavePermissionSocket : WeavePermissionHttp;
-    if(!weave_permission_check(permission)) return WeaveStatusDenied;
+    const char* appid = weave_caller_appid();
+    if(!appid || !weave_permission_check(permission)) return WeaveStatusDenied;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
     WeaveStatus status = WeaveStatusOk;
-    if(weave->transport == WeaveTransportNone) status = WeaveStatusOffline;
+    if(!strcmp(weave->draining_app, appid)) status = WeaveStatusDenied;
+    else if(weave->transport == WeaveTransportNone) status = WeaveStatusOffline;
     else if(weave->queue_count >= WEAVE_QUEUE_MAX) status = WeaveStatusBusy;
     else {
         /* Socket operations are scoped to their creator's callback context.
@@ -256,7 +313,13 @@ static WeaveStatus submit(Weave* weave, const char* verb, const char* target,
         const bool is_socket = !strncmp(verb, "TCP_", 4) ||
                                !strncmp(verb, "UDP_", 4) ||
                                !strncmp(verb, "WS_", 3);
-        if(is_socket && !strstr(verb,"_OPEN")) {
+        if(is_socket && strstr(verb,"_OPEN")) {
+            size_t reserved = weave->closing_count;
+            for(size_t i=0; i<COUNT_OF(weave->sessions); i++) reserved += weave->sessions[i].id != 0;
+            for(size_t i=0; i<weave->queue_count; i++)
+                reserved += strstr(weave->queue[i].request.method,"_OPEN") != NULL;
+            if(reserved >= WEAVE_TRACKED_SESSIONS) status = WeaveStatusBusy;
+        } else if(is_socket) {
             const unsigned long id = strtoul(target, NULL, 10);
             bool owned = false;
             for(size_t i = 0; i < COUNT_OF(weave->sessions); i++) {
@@ -264,7 +327,7 @@ static WeaveStatus submit(Weave* weave, const char* verb, const char* target,
                 const char* kind = session->type == WeaveSocketTcp ? "TCP_" :
                                    session->type == WeaveSocketUdp ? "UDP_" : "WS_";
                 if(session->id == id && !strncmp(verb, kind, strlen(kind)) &&
-                   session->owner == ctx) { owned = true; break; }
+                   session->owner == ctx && !strcmp(session->appid, appid)) { owned = true; break; }
             }
             if(!owned) status = WeaveStatusDenied;
         }
@@ -282,6 +345,7 @@ static WeaveStatus submit(Weave* weave, const char* verb, const char* target,
             if(file_path) strcpy(op->request.file_path, file_path);
             op->callback = cb;
             op->context = ctx;
+            strcpy(op->appid, appid);
         }
     }
     furi_mutex_release(weave->mutex);

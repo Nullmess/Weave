@@ -1,10 +1,13 @@
-/** Weave USB device API for FAPs (v1, Weave 1.0.2).
+/** Weave USB device API for FAPs (v2, additive over v1).
  *
  * USB is one exclusive physical device. Acquire an explicit lease before using
  * HID (CTAP-sized 64 byte reports), CCID (raw CCID message frames), or both.
  * An active USB RPC session will cause BUSY, not be disconnected forcibly.
  * USB RPC is unavailable while a lease is active; BLE RPC remains independent.
- * A FAP must close its lease before unloading, including on every error path.
+ * Acquire requires on-device USB consent (once per app per boot).
+ * Do not acquire from a Weave callback or GUI service thread. The lease
+ * is scoped to the logical app ID and token. Release explicitly on every
+ * path; the loader also attempts cleanup when a FAP exits.
  *
  * This is a transport API, not a FIDO2, PIV, smartcard, or security API.
  * CCID commands, ATR, slot state, APDU status, and CTAP are handled by the FAP.
@@ -20,7 +23,7 @@
 extern "C" {
 #endif
 
-#define WEAVE_USB_API_VERSION 1U
+#define WEAVE_USB_API_VERSION 2U
 #define WEAVE_USB_HID_REPORT_SIZE 64U
 #define WEAVE_USB_CCID_FRAME_MAX 271U
 
@@ -42,6 +45,7 @@ typedef enum {
     WeaveUsbNotOwner,
     WeaveUsbDisconnected,
     WeaveUsbNoData,
+    WeaveUsbDenied,
 } WeaveUsbResult;
 
 /* Optional HID configuration; descriptor memory is copied into firmware.

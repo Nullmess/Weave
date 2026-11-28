@@ -20,6 +20,8 @@ struct Iso14443_4aListener {
     Iso14443_4aData* data;
     Iso14443_4Layer* iso14443_4_layer;
     Iso14443_4aListenerState state;
+    uint16_t peer_frame_size;
+    bool raw_blocks; /* Internal opt-in for the Weave ISO-DEP broker. */
 
     BitBuffer* rx_buffer;
     BitBuffer* tx_buffer;

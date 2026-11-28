@@ -64,12 +64,17 @@ jobs:
           python firmware/site_scons/tools/tests/test_sdk_release.py
           python firmware/site_scons/tools/tests/test_hardware_wrapper.py
           python firmware/site_scons/tools/tests/test_hal_cleanup.py
+          python firmware/site_scons/tools/tests/test_platform_v1.py
+          python firmware/site_scons/tools/tests/test_ble_transport.py
+          python firmware/site_scons/tools/tests/test_nfc_transport.py
+          python firmware/site_scons/tools/tests/test_network_lifecycle.py
+          python firmware/site_scons/tools/tests/test_hardware_policy.py
       - name: Build firmware only (no companion orchestration loop)
         run: python fbt.py build --firmware-only
       - name: Install and validate the generated SDK with uFBT
         run: |
           python -m pip install ufbt==0.2.6
-          python firmware/site_scons/tools/tests/validate_faps.py --sdk build/Weave-1.0.3-sdk.zip
+          python firmware/site_scons/tools/tests/validate_faps.py --sdk "build/Weave-$(cat VERSION)-sdk.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: firmware

@@ -40,7 +40,7 @@ typedef enum {
 } NfcConfigurationState;
 
 struct Nfc {
-    NfcState state;
+    volatile NfcState state;
     NfcPollerState poller_state;
     NfcCommState comm_state;
     NfcConfigurationState config_state;
@@ -109,8 +109,6 @@ static int32_t nfc_worker_listener(void* context) {
     furi_assert(instance->callback);
     furi_assert(instance->config_state == NfcConfigurationStateDone);
 
-    instance->state = NfcStateRunning;
-
     furi_hal_nfc_event_start();
 
     NfcEventData event_data = {};
@@ -118,6 +116,8 @@ static int32_t nfc_worker_listener(void* context) {
     NfcEvent nfc_event = {.data = event_data};
     NfcCommand command = NfcCommandContinue;
 
+    /* Publish running only after the abort flag target is installed. */
+    instance->state = NfcStateRunning;
     while(true) {
         FuriHalNfcEvent event = furi_hal_nfc_listener_wait_event(FURI_HAL_NFC_EVENT_WAIT_FOREVER);
         if(event & FuriHalNfcEventAbortRequest) {
@@ -236,9 +236,7 @@ static int32_t nfc_worker_poller(void* context) {
     return 0;
 }
 
-Nfc* nfc_alloc(void) {
-    furi_check(furi_hal_nfc_acquire() == FuriHalNfcErrorNone);
-
+static Nfc* nfc_alloc_acquired(void) {
     Nfc* instance = malloc(sizeof(Nfc));
     instance->state = NfcStateIdle;
     instance->comm_state = NfcCommStateIdle;
@@ -252,6 +250,20 @@ Nfc* nfc_alloc(void) {
 
     return instance;
 }
+
+Nfc* nfc_alloc(void) {
+    furi_check(furi_hal_nfc_acquire() == FuriHalNfcErrorNone);
+    return nfc_alloc_acquired();
+}
+
+#ifdef SRV_WEAVE
+/* Internal, caller must free on the same owner thread. */
+extern bool furi_hal_nfc_try_acquire(uint32_t timeout);
+Nfc* nfc_try_alloc(uint32_t timeout) {
+    if(!furi_hal_nfc_try_acquire(timeout)) return NULL;
+    return nfc_alloc_acquired();
+}
+#endif
 
 void nfc_free(Nfc* instance) {
     furi_check(instance);
@@ -322,6 +334,11 @@ void nfc_start(Nfc* instance, NfcEventCallback callback, void* context) {
     }
     instance->comm_state = NfcCommStateIdle;
     furi_thread_start(instance->worker_thread);
+    /* The listener may be stopped immediately after start (e.g. an orphaned
+     * lease). Do not send abort before the worker has installed its target. */
+    if(instance->mode == NfcModeListener) {
+        while(instance->state != NfcStateRunning) furi_delay_tick(1);
+    }
 }
 
 void nfc_stop(Nfc* instance) {

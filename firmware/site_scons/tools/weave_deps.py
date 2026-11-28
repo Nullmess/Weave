@@ -166,7 +166,7 @@ def bootstrap_monocypher():
         failures = []
         for url in urls:
             try:
-                request = urllib.request.Request(url, headers={"User-Agent": "Weave-Build/1.0.3"})
+                request = urllib.request.Request(url, headers={"User-Agent": "Weave-Build/1.0.4"})
                 with urllib.request.urlopen(request, timeout=60) as response:
                     data = response.read(8 * 1024 * 1024 + 1)
                 if len(data) > 8 * 1024 * 1024 or hashlib.sha512(data).hexdigest() != MONOCYPHER_SHA512:

@@ -62,6 +62,8 @@ typedef struct {
     BtMessageData data;
     bool* result;
     FuriHalBleProfileBase** profile_instance;
+    bool weave_request;
+    bool* weave_reserved;
 } BtMessage;
 
 struct Bt {
@@ -73,6 +75,7 @@ struct Bt {
     BtStatus status;
     bool beacon_active;
     FuriHalBleProfileBase* current_profile;
+    bool weave_lease;
     FuriMessageQueue* message_queue;
     NotificationApp* notification;
     Gui* gui;

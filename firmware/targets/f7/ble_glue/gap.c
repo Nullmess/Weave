@@ -273,7 +273,8 @@ BleEventFlowStatus ble_event_app_notification(void* pckt) {
                 aci_gap_terminate(gap->service.connection_handle, 5);
             } else {
                 FURI_LOG_I(TAG, "Pairing complete");
-                GapEvent event = {.type = GapEventTypeConnected};
+                GapEvent event = {.type = GapEventTypeConnected,
+                    .data.connection_handle = gap->service.connection_handle};
                 gap->on_event_cb(event, gap->context); //-V595
             }
             break;

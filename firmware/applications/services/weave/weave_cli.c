@@ -65,7 +65,7 @@ static void	weave_cli(PipeSide *pipe, FuriString *args, void *context)
 	transport = weave->transport;
 	pending = weave->queue_count != 0;
 	furi_mutex_release(weave->mutex);
-	printf("Weave 1.0.3\r\nGateway: %s\r\n",
+	printf("Weave 1.0.4\r\nGateway: %s\r\n",
 		weave_transport_name(transport));
 	printf("Request: %s\r\n", weave_request_name(pending));
 }
@@ -165,6 +165,8 @@ static void weave_factory_restore_faps(void) {
 
 extern void weave_network_mailbox_init(Weave* weave);
 extern void weave_usb_broker_init(void);
+extern void weave_ble_broker_init(void);
+extern void weave_nfc_broker_init(void);
 extern void weave_security_init(void);
 extern void weave_permissions_init(void);
 
@@ -183,6 +185,8 @@ int32_t	weave_on_system_start(void *context)
 	weave->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
 	furi_check(weave->mutex);
 	weave_usb_broker_init();
+    weave_ble_broker_init();
+    weave_nfc_broker_init();
 	weave_security_init();
 	weave_permissions_init();
 	furi_record_create(RECORD_WEAVE, weave);

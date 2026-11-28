@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.4]
+
+- USB and Permissions APIs v2 and SDK ABI 89.4.
+- Generic BLE GATT and NFC ISO-DEP APIs (experimental).
+- Software keystore, encrypted storage recovery and capability discovery.
+- Automatic resource cleanup and improved network lifecycle.
+- MPU and hardware anti-rollback groundwork.
+
 ## [1.0.3]
 
 - Security API v4 and SDK ABI 89.3.

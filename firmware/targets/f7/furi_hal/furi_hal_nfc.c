@@ -268,6 +268,19 @@ FuriHalNfcError furi_hal_nfc_acquire(void) {
     return error;
 }
 
+/* Broker-only acquisition. Unlike the public HAL function, a busy shared
+ * radio SPI bus is reported without waiting forever. */
+extern bool furi_hal_spi_try_acquire_radio(const FuriHalSpiBusHandle* handle, uint32_t timeout);
+bool furi_hal_nfc_try_acquire(uint32_t timeout) {
+    if(!furi_hal_nfc.mutex || !furi_hal_spi_try_acquire_radio(&furi_hal_spi_bus_handle_nfc, timeout))
+        return false;
+    if(furi_mutex_acquire(furi_hal_nfc.mutex, 0) != FuriStatusOk) {
+        furi_hal_spi_release(&furi_hal_spi_bus_handle_nfc);
+        return false;
+    }
+    return true;
+}
+
 FuriHalNfcError furi_hal_nfc_release(void) {
     furi_check(furi_hal_nfc.mutex);
     furi_check(furi_hal_nfc_is_mine());

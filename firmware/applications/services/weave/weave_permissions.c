@@ -1,4 +1,5 @@
 #include "weave_permissions.h"
+#include "weave_internal.h"
 #include <furi.h>
 #include <dialogs/dialogs.h>
 #include <string.h>
@@ -22,7 +23,7 @@ void weave_permissions_init(void) {
     furi_check(grants_mutex && approval_mutex);
 }
 
-static const char* caller_appid(void) {
+const char* weave_caller_appid(void) {
     const FuriThreadId id = furi_thread_get_current_id();
     if(!id) return NULL;
     const char* name = furi_thread_get_appid(id);
@@ -49,7 +50,7 @@ static bool granted_locked(const char* appid, WeavePermission capability) {
 
 bool weave_permission_has(WeavePermission capability) {
     if(!grants_mutex || (unsigned)capability >= WeavePermissionCount) return false;
-    const char* appid = caller_appid();
+    const char* appid = weave_caller_appid();
     if(!appid) return false;
     furi_mutex_acquire(grants_mutex, FuriWaitForever);
     bool result = granted_locked(appid, capability);
@@ -60,17 +61,15 @@ bool weave_permission_has(WeavePermission capability) {
 bool weave_permission_check(WeavePermission capability) {
     if(!grants_mutex || !approval_mutex ||
        (unsigned)capability >= WeavePermissionCount) return false;
-    const char* appid = caller_appid();
+    const char* appid = weave_caller_appid();
     if(!appid) return false;
-    /* The trusted Weave service performs internal cleanup with no FAP grant. */
-    if(!strcmp(appid, "weave")) return true;
     if(weave_permission_has(capability)) return true;
     furi_mutex_acquire(approval_mutex, FuriWaitForever);
     if(weave_permission_has(capability)) {
         furi_mutex_release(approval_mutex);
         return true;
     }
-    static const char* captions[] = {"HTTP requests", "Network sockets", "File uploads", "Secret vault"};
+    static const char* const captions[WeavePermissionCount] = {"HTTP requests", "Network sockets", "File uploads", "Secret vault", "USB device", "Key storage", "BLE GATT server", "NFC ISO-DEP"};
     char body[96];
     snprintf(body, sizeof(body), "App: %.32s\nAccess: %s\nUntil reboot", appid, captions[capability]);
     DialogsApp* dialogs = furi_record_open(RECORD_DIALOGS);
@@ -87,7 +86,7 @@ bool weave_permission_check(WeavePermission capability) {
             const int32_t lock = furi_kernel_lock();
             if(memmgr_heap_get_max_free_block() >= WEAVE_GRANTS_MAX * sizeof(WeaveGrant) + 64U) {
                 grants = malloc(WEAVE_GRANTS_MAX * sizeof(WeaveGrant));
-                memset(grants, 0, WEAVE_GRANTS_MAX * sizeof(WeaveGrant));
+                if(grants) memset(grants, 0, WEAVE_GRANTS_MAX * sizeof(WeaveGrant));
             }
             if(lock == 0) furi_kernel_unlock();
         }
@@ -110,7 +109,7 @@ bool weave_permission_check(WeavePermission capability) {
 
 void weave_permission_revoke_self(void) {
     if(!grants_mutex || !approval_mutex) return;
-    const char* appid = caller_appid();
+    const char* appid = weave_caller_appid();
     if(!appid) return;
     furi_mutex_acquire(approval_mutex, FuriWaitForever);
     furi_mutex_acquire(grants_mutex, FuriWaitForever);
@@ -126,4 +125,8 @@ void weave_permission_revoke_self(void) {
     }
     furi_mutex_release(grants_mutex);
     furi_mutex_release(approval_mutex);
+    /* Revoke the current physical lease as well as future grants. */
+    (void)weave_usb_release_app(appid);
+    (void)weave_ble_release_app(appid);
+    (void)weave_nfc_release_app(appid);
 }

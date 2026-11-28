@@ -186,9 +186,15 @@ Iso14443_4LayerResult iso14443_4_layer_decode_command(
     BitBuffer* block_data) {
     furi_assert(instance);
 
+    const size_t input_size = bit_buffer_get_size_bytes(input_data);
+    if(!input_size || bit_buffer_get_size(input_data) % 8U) return Iso14443_4LayerResultSkip;
     uint8_t ppss = bit_buffer_get_byte(input_data, 0);
     if(ISO14443_4_BLOCK_PPS_IS_START(ppss)) {
         if(instance->can_pps) {
+            if(input_size < 2) return Iso14443_4LayerResultSkip;
+            const uint8_t pps0_value = bit_buffer_get_byte(input_data, 1);
+            if(input_size != ((pps0_value & ISO14443_4_BLOCK_PPS_0_HAS_PPS1) ? 3U : 2U))
+                return Iso14443_4LayerResultSkip;
             const uint8_t cid = ppss & ISO14443_4_BLOCK_CID_MASK;
             if(instance->cid != ISO14443_4_LAYER_CID_NOT_SUPPORTED && cid != instance->cid) {
                 return Iso14443_4LayerResultSkip;
@@ -217,7 +223,11 @@ Iso14443_4LayerResult iso14443_4_layer_decode_command(
     instance->pcb = bit_buffer_get_byte(input_data, prologue_len++);
 
     if(ISO14443_4_BLOCK_PCB_IS_I_BLOCK(instance->pcb)) {
+        /* The listener has no reassembly support. Never deliver fragments as
+         * independent application messages. */
+        if(ISO14443_4_BLOCK_PCB_IS_CHAIN_ACTIVE(instance->pcb)) return Iso14443_4LayerResultSkip;
         if(instance->pcb & ISO14443_4_BLOCK_PCB_I_CID_MASK) {
+            if(input_size <= prologue_len) return Iso14443_4LayerResultSkip;
             const uint8_t cid = bit_buffer_get_byte(input_data, prologue_len++) &
                                 ISO14443_4_BLOCK_CID_MASK;
             if(instance->cid == ISO14443_4_LAYER_CID_NOT_SUPPORTED || cid != instance->cid) {
@@ -231,14 +241,17 @@ Iso14443_4LayerResult iso14443_4_layer_decode_command(
             if(instance->nad == ISO14443_4_LAYER_NAD_NOT_SUPPORTED) {
                 return Iso14443_4LayerResultSkip;
             }
+            if(input_size <= prologue_len) return Iso14443_4LayerResultSkip;
             instance->nad = bit_buffer_get_byte(input_data, prologue_len++);
         }
+        if(input_size <= prologue_len) return Iso14443_4LayerResultSkip;
         bit_buffer_copy_right(block_data, input_data, prologue_len);
         iso14443_4_layer_update_pcb(instance, false);
         return Iso14443_4LayerResultData;
 
     } else if(ISO14443_4_BLOCK_PCB_IS_S_BLOCK(instance->pcb)) {
         if(instance->pcb & ISO14443_4_BLOCK_PCB_S_CID_MASK) {
+            if(input_size <= prologue_len) return Iso14443_4LayerResultSkip;
             const uint8_t cid = bit_buffer_get_byte(input_data, prologue_len++) &
                                 ISO14443_4_BLOCK_CID_MASK;
             if(instance->cid == ISO14443_4_LAYER_CID_NOT_SUPPORTED || cid != instance->cid) {

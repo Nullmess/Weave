@@ -274,6 +274,10 @@ bool weave_security_ed25519ph_verify(
  * Namespace is an application-local label, not an OS sandbox.
  * Existing step-2 vault entries use a legacy unscoped format and are not
  * automatically accessible; no destructive migration is attempted.
+ * Weave 1.0.4 uses two encrypted journal slots; legacy WVS1 files are readable.
+ * A torn write can recover the previous complete value. This is NOT rollback
+ * protection, secure erase, or guaranteed atomicity on removable media.
+ * A successful update may retain the previous encrypted value on disk.
  * Untrusted/low-entropy passwords are vulnerable to offline dictionary attacks.
  */
 WeaveSecurityResult weave_secret_store(

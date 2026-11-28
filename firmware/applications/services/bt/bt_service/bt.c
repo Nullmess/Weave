@@ -8,6 +8,9 @@
 #include <gui/elements.h>
 #include <assets_icons.h>
 #include <profiles/serial_profile.h>
+#ifdef SRV_WEAVE
+#include <weave/weave_ble_profile.h>
+#endif
 
 #define TAG "BtSrv"
 
@@ -153,6 +156,7 @@ Bt* bt_alloc(void) {
 
     bt->max_packet_size = BLE_PROFILE_SERIAL_PACKET_SIZE_MAX;
     bt->current_profile = NULL;
+    bt->weave_lease = false;
     // Keys storage
     bt->keys_storage = bt_keys_storage_alloc(BT_KEYS_STORAGE_PATH);
 
@@ -260,6 +264,10 @@ static bool bt_on_gap_event_callback(GapEvent event, void* context) {
     bool current_profile_is_serial =
         furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial);
 
+#ifdef SRV_WEAVE
+    if(furi_hal_bt_check_profile_type(bt->current_profile, weave_ble_profile))
+        weave_ble_profile_gap(event);
+#endif
     if(event.type == GapEventTypeConnected) {
         // Update status bar
         bt->status = BtStatusConnected;
@@ -395,6 +403,24 @@ static void bt_close_rpc_connection(Bt* bt) {
 }
 
 static void bt_change_profile(Bt* bt, BtMessage* message) {
+#ifdef SRV_WEAVE
+    if(message->weave_request) {
+        const bool restore = message->data.profile.template == ble_profile_serial;
+        const bool can_acquire = !bt->weave_lease &&
+            furi_hal_bt_check_profile_type(bt->current_profile, ble_profile_serial);
+        if((restore && !bt->weave_lease) || (!restore && !can_acquire)) {
+            if(message->profile_instance) *message->profile_instance = NULL;
+            if(message->result) *message->result = false;
+            return;
+        }
+        bt->weave_lease = true;
+        if(message->weave_reserved) *message->weave_reserved = true;
+    } else if(bt->weave_lease) {
+        if(message->profile_instance) *message->profile_instance = NULL;
+        if(message->result) *message->result = false;
+        return;
+    }
+#endif
     if(furi_hal_bt_is_gatt_gap_supported()) {
         bt_settings_load(&bt->bt_settings);
 
@@ -410,6 +436,10 @@ static void bt_change_profile(Bt* bt, BtMessage* message) {
             bt);
         if(bt->current_profile) {
             FURI_LOG_I(TAG, "Bt App started");
+#ifdef SRV_WEAVE
+            if(message->weave_request && message->data.profile.template == ble_profile_serial)
+                bt->weave_lease = false;
+#endif
             if(bt->bt_settings.enabled) {
                 furi_hal_bt_start_advertising();
             }
@@ -449,6 +479,7 @@ static void bt_apply_settings(Bt* bt) {
 }
 
 static void bt_load_keys(Bt* bt) {
+    if(bt->weave_lease) return;
     if(!furi_hal_bt_is_gatt_gap_supported()) {
         bt_show_warning(bt, "Unsupported radio stack");
         bt->status = BtStatusUnavailable;
@@ -467,6 +498,7 @@ static void bt_load_keys(Bt* bt) {
 }
 
 static void bt_start_application(Bt* bt) {
+    if(bt->weave_lease) return;
     if(!bt->current_profile) {
         bt->current_profile = furi_hal_bt_change_app(
             ble_profile_serial,

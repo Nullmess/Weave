@@ -9,12 +9,16 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define WEAVE_PERMISSIONS_API_VERSION 1U
+#define WEAVE_PERMISSIONS_API_VERSION 2U
 typedef enum {
     WeavePermissionHttp = 0,
     WeavePermissionSocket,
     WeavePermissionUpload,
     WeavePermissionVault,
+    WeavePermissionUsb,
+    WeavePermissionKeystore,
+    WeavePermissionBle,
+    WeavePermissionNfc,
     WeavePermissionCount,
 } WeavePermission;
 /* Blocks for on-device consent if not yet granted. Returns false on Deny/Back,
@@ -23,7 +27,8 @@ typedef enum {
 bool weave_permission_check(WeavePermission capability);
 /* Query does not prompt. */
 bool weave_permission_has(WeavePermission capability);
-/* Revoke all RAM grants for the calling application (no effect on others). */
+/* Revoke all RAM grants and attempt to release the calling app's USB, BLE and NFC leases.
+ * No effect on others. Serialize with that app's acquire/check operations. */
 void weave_permission_revoke_self(void);
 #ifdef __cplusplus
 }

@@ -25,23 +25,25 @@ static void session_update(Weave* weave, const WeaveOperation* op,
     WeaveSocketType type;
     if(session_operation(op->request.method,"OPEN",&type)) {
         if(!response->http_status) return;
-        for(size_t i = 0; i < COUNT_OF(weave->sessions); i++) {
-            if(weave->sessions[i].id == response->http_status &&
-               weave->sessions[i].type == type) {
-                weave->sessions[i] = (WeaveTrackedSession){
-                    .id=response->http_status,.type=type,.owner=op->context,
-                };
+        /* Never reassign an already live remote session ID. */
+        for(size_t i=0; i<COUNT_OF(weave->sessions); i++)
+            if(weave->sessions[i].id == response->http_status && weave->sessions[i].type == type) return;
+        if(op->detached) {
+            furi_check(weave->closing_count < COUNT_OF(weave->closing_sessions));
+            weave->closing_sessions[weave->closing_count++] = (WeaveTrackedSession){
+                .id=response->http_status,.type=type};
+            return;
+        }
+        for(size_t i=0; i<COUNT_OF(weave->sessions); i++) {
+            WeaveTrackedSession* session=&weave->sessions[i];
+            if(!session->id) {
+                *session=(WeaveTrackedSession){.id=response->http_status,.type=type,.owner=op->context};
+                strcpy(session->appid,op->appid);
                 return;
             }
         }
-        for(size_t i = 0; i < COUNT_OF(weave->sessions); i++) {
-            if(!weave->sessions[i].id) {
-                weave->sessions[i] = (WeaveTrackedSession){
-                    .id=response->http_status,.type=type,.owner=op->context,
-                };
-                return;
-            }
-        }
+        /* Admission in submit reserves capacity for every pending OPEN. */
+        furi_check(false);
         return;
     }
     const bool watch = session_operation(op->request.method,"WATCH",&type);
@@ -66,6 +68,7 @@ void weave_gateway_attach(Weave* weave, WeaveTransport transport) {
     WeaveCallback callbacks[WEAVE_QUEUE_MAX] = {0};
     void* contexts[WEAVE_QUEUE_MAX] = {0};
     uint32_t ids[WEAVE_QUEUE_MAX] = {0};
+    char appids[WEAVE_QUEUE_MAX][WEAVE_OWNER_SIZE] = {0};
     WeaveTransportListener listeners[4] = {0};
     size_t aborted_count = 0;
     bool changed = false;
@@ -77,6 +80,7 @@ void weave_gateway_attach(Weave* weave, WeaveTransport transport) {
             callbacks[i] = weave->queue[i].callback;
             contexts[i] = weave->queue[i].context;
             ids[i] = weave->queue[i].request.id;
+            strcpy(appids[i],weave->queue[i].appid);
         }
         /* Aborting a transport frees the whole FIFO, including its unused
          * capacity. Callback IDs/contexts have already been copied above. */
@@ -88,9 +92,9 @@ void weave_gateway_attach(Weave* weave, WeaveTransport transport) {
         weave->queue_count = 0;
         memcpy(listeners, weave->listeners, sizeof(listeners));
         for(size_t i = 0; i < aborted_count; i++)
-            if(callbacks[i]) weave_callback_started_locked(weave, contexts[i]);
+            if(callbacks[i]) weave_callback_started_locked(weave, contexts[i], appids[i]);
         for(size_t i = 0; i < COUNT_OF(listeners); i++)
-            if(listeners[i].callback) weave_callback_started_locked(weave, listeners[i].context);
+            if(listeners[i].callback) weave_callback_started_locked(weave, listeners[i].context, listeners[i].appid);
     }
     weave->transport = transport;
     furi_mutex_release(weave->mutex);
@@ -98,19 +102,20 @@ void weave_gateway_attach(Weave* weave, WeaveTransport transport) {
         if(callbacks[i]) {
             const WeaveResponse response = {.id=ids[i],.status=WeaveStatusOffline};
             callbacks[i](&response,contexts[i]);
-            weave_callback_finished(weave, contexts[i]);
+            weave_callback_finished(weave, contexts[i], appids[i]);
         }
     }
     if(changed) for(size_t i = 0; i < COUNT_OF(listeners); i++) {
         if(listeners[i].callback) {
             listeners[i].callback(transport,listeners[i].context);
-            weave_callback_finished(weave, listeners[i].context);
+            weave_callback_finished(weave, listeners[i].context, listeners[i].appid);
         }
     }
 }
 bool weave_gateway_poll(Weave* weave, WeaveRequest* request) {
     if(!weave || !request) return false;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
+    weave_flush_cleanup_locked(weave);
     bool ready = weave->queue_count && !weave->queue[0].dispatched;
     if(ready) {
         *request = weave->queue[0].request;
@@ -135,21 +140,25 @@ bool weave_gateway_reply(Weave* weave, const WeaveResponse* response) {
        (response->size && !response->data)) return false;
     WeaveCallback callback = NULL;
     void* context = NULL;
+    char appid[WEAVE_OWNER_SIZE] = {0};
+    bool accepted = false;
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
     if(weave->queue_count && weave->queue[0].dispatched &&
        response->id == weave->queue[0].request.id) {
+        accepted = true;
         callback = weave->queue[0].callback;
         context = weave->queue[0].context;
-        if(callback) weave_callback_started_locked(weave, context);
+        strcpy(appid,weave->queue[0].appid);
+        if(callback) weave_callback_started_locked(weave, context, appid);
         session_update(weave,&weave->queue[0],response);
         if(!response->more) weave_reset(weave);
     }
     furi_mutex_release(weave->mutex);
     if(callback) {
         callback(response, context);
-        weave_callback_finished(weave, context);
+        weave_callback_finished(weave, context, appid);
     }
-    return callback != NULL;
+    return accepted;
 }
 
 /* Deliver events only to a listener sharing the owner's callback context.
@@ -165,11 +174,13 @@ void weave_gateway_socket_event(Weave* weave, const WeaveSocketEvent* event) {
     furi_mutex_acquire(weave->mutex, FuriWaitForever);
     bool valid = false;
     void* owner = NULL;
+    const char* appid = NULL;
     if(weave->transport != WeaveTransportNone) {
         for(size_t i = 0; i < COUNT_OF(weave->sessions); i++) {
             const WeaveTrackedSession* s = &weave->sessions[i];
             if(s->id == event->session && s->type == event->type && s->watched) {
                 owner = s->owner;
+                appid = s->appid;
                 valid = true;
                 break;
             }
@@ -178,9 +189,9 @@ void weave_gateway_socket_event(Weave* weave, const WeaveSocketEvent* event) {
     if(valid) {
         for(size_t i = 0; i < COUNT_OF(callbacks); i++) {
             const WeaveSocketEventListener* l = &weave->socket_listeners[i];
-            if(l->callback && l->context == owner) {
+            if(l->callback && l->context == owner && !strcmp(l->appid,appid)) {
                 callbacks[i] = *l;
-                weave_callback_started_locked(weave, l->context);
+                weave_callback_started_locked(weave, l->context, l->appid);
             }
         }
     }
@@ -188,7 +199,7 @@ void weave_gateway_socket_event(Weave* weave, const WeaveSocketEvent* event) {
     for(size_t i = 0; i < COUNT_OF(callbacks); i++) {
         if(callbacks[i].callback) {
             callbacks[i].callback(event,callbacks[i].context);
-            weave_callback_finished(weave, callbacks[i].context);
+            weave_callback_finished(weave, callbacks[i].context, callbacks[i].appid);
         }
     }
 }

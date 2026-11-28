@@ -62,6 +62,20 @@ void furi_hal_spi_acquire(const FuriHalSpiBusHandle* handle) {
     handle->callback(handle, FuriHalSpiBusHandleEventActivate);
 }
 
+/* Internal f7 radio lease for asynchronous brokers. Same mutex as the
+ * blocking SPI path; no change to public ABI or lock order. */
+extern FuriMutex* furi_hal_spi_bus_r_mutex;
+bool furi_hal_spi_try_acquire_radio(const FuriHalSpiBusHandle* handle, uint32_t timeout) {
+    if(!handle || handle->bus != &furi_hal_spi_bus_r || !furi_hal_spi_bus_r_mutex) return false;
+    if(furi_mutex_acquire(furi_hal_spi_bus_r_mutex, timeout) != FuriStatusOk) return false;
+    furi_hal_power_insomnia_enter();
+    handle->bus->callback(handle->bus, FuriHalSpiBusEventActivate);
+    furi_check(handle->bus->current_handle == NULL);
+    handle->bus->current_handle = handle;
+    handle->callback(handle, FuriHalSpiBusHandleEventActivate);
+    return true;
+}
+
 void furi_hal_spi_release(const FuriHalSpiBusHandle* handle) {
     furi_check(handle);
     furi_check(handle->bus->current_handle == handle);

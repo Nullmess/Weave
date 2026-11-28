@@ -2,6 +2,8 @@
 
 #include <nfc/protocols/nfc_listener_defs.h>
 #include <nfc/nfc_device_i.h>
+#include <nfc/protocols/iso14443_4a/iso14443_4a_listener.h>
+extern void iso14443_4a_listener_enable_raw(Iso14443_4aListener* instance);
 
 #include <furi.h>
 
@@ -140,4 +142,11 @@ const NfcDeviceData* nfc_listener_get_data(const NfcListener* instance, NfcProto
 
     NfcListenerListElement* tail_element = instance->list.tail;
     return tail_element->listener_api->get_data(tail_element->listener);
+}
+
+/* Internal opt-in: other native NFC applications retain the original parser. */
+bool nfc_listener_enable_weave_isodep(NfcListener* instance) {
+    if(!instance||instance->protocol!=NfcProtocolIso14443_4a) return false;
+    iso14443_4a_listener_enable_raw((Iso14443_4aListener*)instance->list.tail->listener);
+    return true;
 }

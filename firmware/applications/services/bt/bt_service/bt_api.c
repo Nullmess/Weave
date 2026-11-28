@@ -21,13 +21,11 @@ FuriHalBleProfileBase* bt_profile_start(
     /* Attente déverrouillage */
     api_lock_wait_unlock_and_free(message.lock);
 
-    bt->current_profile = profile_instance;
     return profile_instance;
 }
 
 bool bt_profile_restore_default(Bt* bt) {
-    bt->current_profile = bt_profile_start(bt, ble_profile_serial, NULL);
-    return bt->current_profile != NULL;
+    return bt_profile_start(bt, ble_profile_serial, NULL) != NULL;
 }
 
 void bt_disconnect(Bt* bt) {
@@ -109,3 +107,22 @@ void bt_set_settings(Bt* bt, const BtSettings* settings) {
 
     api_lock_wait_unlock_and_free(message.lock);
 }
+
+#ifdef SRV_WEAVE
+/* Internal only; ownership checks are serialized on the BT service thread. */
+FuriHalBleProfileBase* bt_weave_profile_start(Bt* bt,
+    const FuriHalBleProfileTemplate* profile, FuriHalBleProfileParams params, bool* reserved) {
+    FuriHalBleProfileBase* instance = NULL;
+    *reserved = false;
+    BtMessage message = {.lock=api_lock_alloc_locked(), .type=BtMessageTypeSetProfile,
+        .profile_instance=&instance, .weave_request=true, .weave_reserved=reserved,
+        .data.profile={.template=profile,.params=params}};
+    furi_check(furi_message_queue_put(bt->message_queue, &message, FuriWaitForever) == FuriStatusOk);
+    api_lock_wait_unlock_and_free(message.lock);
+    return instance;
+}
+bool bt_weave_profile_restore(Bt* bt) {
+    bool reserved = false;
+    return bt_weave_profile_start(bt, ble_profile_serial, NULL, &reserved) != NULL;
+}
+#endif
