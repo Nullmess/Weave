@@ -214,7 +214,10 @@ class Main(App):
             return True
 
         fw2stack_gap = radio_addr - self.FLASH_BASE - fw_size
-        self.logger.debug(f"Expected reserved space size: {fw2stack_gap}")
+        self.logger.info(
+            f"Firmware DFU: {fw_size} bytes; C1 budget: "
+            f"{radio_addr - self.FLASH_BASE} bytes; gap: {fw2stack_gap} bytes"
+        )
         fw2stack_gap_pages = fw2stack_gap / self.FLASH_PAGE_SIZE
         if fw2stack_gap_pages < 0:
             self.logger.warning(

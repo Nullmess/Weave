@@ -77,10 +77,19 @@ bool furi_log_level_from_string(const char* str, FuriLogLevel* level);
     furi_log_print_format(FuriLogLevelWarn, tag, format, ##__VA_ARGS__)
 #define FURI_LOG_I(tag, format, ...) \
     furi_log_print_format(FuriLogLevelInfo, tag, format, ##__VA_ARGS__)
+/* Compact built-in release: keep format/type checking without emitting
+ * debug/trace strings. Debug builds and external FAPs retain normal logging. */
+#ifdef WEAVE_COMPACT_LOGS
+#define FURI_LOG_D(tag, format, ...) \
+    do { if(0) furi_log_print_format(FuriLogLevelDebug, tag, format, ##__VA_ARGS__); } while(0)
+#define FURI_LOG_T(tag, format, ...) \
+    do { if(0) furi_log_print_format(FuriLogLevelTrace, tag, format, ##__VA_ARGS__); } while(0)
+#else
 #define FURI_LOG_D(tag, format, ...) \
     furi_log_print_format(FuriLogLevelDebug, tag, format, ##__VA_ARGS__)
 #define FURI_LOG_T(tag, format, ...) \
     furi_log_print_format(FuriLogLevelTrace, tag, format, ##__VA_ARGS__)
+#endif
 
 #define FURI_LOG_RAW_E(format, ...) \
     furi_log_print_raw_format(FuriLogLevelError, format, ##__VA_ARGS__)
@@ -88,10 +97,17 @@ bool furi_log_level_from_string(const char* str, FuriLogLevel* level);
     furi_log_print_raw_format(FuriLogLevelWarn, format, ##__VA_ARGS__)
 #define FURI_LOG_RAW_I(format, ...) \
     furi_log_print_raw_format(FuriLogLevelInfo, format, ##__VA_ARGS__)
+#ifdef WEAVE_COMPACT_LOGS
+#define FURI_LOG_RAW_D(format, ...) \
+    do { if(0) furi_log_print_raw_format(FuriLogLevelDebug, format, ##__VA_ARGS__); } while(0)
+#define FURI_LOG_RAW_T(format, ...) \
+    do { if(0) furi_log_print_raw_format(FuriLogLevelTrace, format, ##__VA_ARGS__); } while(0)
+#else
 #define FURI_LOG_RAW_D(format, ...) \
     furi_log_print_raw_format(FuriLogLevelDebug, format, ##__VA_ARGS__)
 #define FURI_LOG_RAW_T(format, ...) \
     furi_log_print_raw_format(FuriLogLevelTrace, format, ##__VA_ARGS__)
+#endif
 
 #ifdef __cplusplus
 }

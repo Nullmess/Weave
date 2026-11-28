@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import types
 import unittest
@@ -81,6 +82,66 @@ class SdkTest(unittest.TestCase):
             self.assertEqual(dest.read_bytes(),old)
             self.assertFalse(dest.with_suffix('.zip.tmp').exists())
             print('SDK canonical scripts path, ABI manifest, publication, invalid layout rejection and previous asset preservation: PASS')
+
+    def test_compact_logs_and_flash_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)
+            source=p/'logs.c'
+            source.write_text(r'''
+#define _ATTRIBUTE(x) __attribute__(x)
+#include "log.h"
+#include <assert.h>
+static unsigned calls;
+void furi_log_print_format(FuriLogLevel level, const char* tag, const char* format, ...) {
+    (void)level; (void)tag; (void)format; ++calls;
+}
+void furi_log_print_raw_format(FuriLogLevel level, const char* format, ...) {
+    (void)level; (void)format; ++calls;
+}
+int main(void) {
+    unsigned value=7;
+    FURI_LOG_E("tag", "error %u", value);
+    FURI_LOG_W("tag", "warning %u", value);
+    FURI_LOG_I("tag", "info %u", value);
+    FURI_LOG_D("tag", "WEAVE_DEBUG_TEST_MARKER %u", value);
+    FURI_LOG_T("tag", "WEAVE_TRACE_TEST_MARKER %u", value);
+    FURI_LOG_RAW_D("WEAVE_RAW_DEBUG_TEST_MARKER %u", value);
+    FURI_LOG_RAW_T("WEAVE_RAW_TRACE_TEST_MARKER %u", value);
+#ifdef WEAVE_COMPACT_LOGS
+    assert(calls==3);
+#else
+    assert(calls==7);
+#endif
+    return 0;
+}
+''')
+            for compact in (False, True):
+                binary=p/('compact' if compact else 'normal')
+                # Compile separately to keep calls observable, including marker strings.
+                subprocess.run(['gcc','-std=gnu11','-Os','-Wall','-Wextra','-Werror',
+                    '-fno-inline','-fno-ipa-cp','-fno-ipa-sra',
+                    *(['-DWEAVE_COMPACT_LOGS'] if compact else []),
+                    '-I',str(ROOT/'furi/core'),str(source),'-o',str(binary)],check=True)
+                subprocess.run([str(binary)],check=True)
+        # Execute the actual layout guard without needing embedded packaging dependencies.
+        tree=ast.parse((TOOLS/'update.py').read_text())
+        cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Main')
+        method=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='layout_check')
+        names={'FLASH_BASE','FLASH_PAGE_SIZE','MIN_GAP_PAGES','UPDATER_SIZE_THRESHOLD'}
+        scope={}
+        for assignment in cls.body:
+            if isinstance(assignment,ast.Assign) and isinstance(assignment.targets[0],ast.Name) and assignment.targets[0].id in names:
+                exec(compile(ast.Module(body=[assignment],type_ignores=[]),'update.py','exec'),scope)
+        exec(compile(ast.Module(body=[method],type_ignores=[]),'update.py','exec'),scope)
+        messages=[]
+        fixture=types.SimpleNamespace(**{k:scope[k] for k in names},logger=types.SimpleNamespace(info=messages.append,warning=messages.append))
+        check=scope['layout_check']
+        budget=0x080D7000-fixture.FLASH_BASE
+        self.assertTrue(check(fixture,1000,budget-4096,0x080D7000))
+        self.assertFalse(check(fixture,1000,budget+1,0x080D7000))
+        self.assertFalse(check(fixture,1000,885860,0x080D7000))
+        self.assertTrue(any('C1 budget' in message for message in messages))
+        print('Compact release log policy and C2 overlap refusal: PASS')
 
     def test_symbol_hashes(self):
         sys.path.insert(0,str(TOOLS/'fbt/sdk'))

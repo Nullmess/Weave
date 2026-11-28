@@ -170,12 +170,11 @@ extern void weave_nfc_broker_init(void);
 extern void weave_security_init(void);
 extern void weave_permissions_init(void);
 
-int32_t	weave_on_system_start(void *context)
+void	weave_on_system_start(void)
 {
 	Weave		*weave;
 	CliRegistry	*cli;
 
-	UNUSED(context);
     weave_hostname_restore();
     weave_categories_ensure();
     weave_factory_restore_faps();
@@ -198,5 +197,4 @@ int32_t	weave_on_system_start(void *context)
 	weave_ringtone_init();
 	weave_network_mailbox_init(weave);
 	FURI_LOG_I(TAG, "Service ready");
-	return (0);
 }

@@ -224,6 +224,8 @@ sources.extend(
 if fwenv["IS_BASE_FIRMWARE"] and fwenv["COMPACT"]:
     fwenv.AppendUnique(CCFLAGS=["-flto"])
     fwenv.AppendUnique(LINKFLAGS=["-Oz", "-flto"])
+    if not fwenv["DEBUG"]:
+        fwenv.AppendUnique(CPPDEFINES=["WEAVE_COMPACT_LOGS"])
 
 fwelf = fwenv["FW_ELF"] = fwenv.Program(
     "${FIRMWARE_BUILD_CFG}",

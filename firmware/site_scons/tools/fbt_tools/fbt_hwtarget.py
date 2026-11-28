@@ -134,6 +134,8 @@ def ApplyLibFlags(env):
     if env["IS_BASE_FIRMWARE"] and env["COMPACT"] and env.get("FW_LIB_NAME") in {
         "toolbox", "flipperformat", "flipper_application", "u8g2", "mjs",
         "nfc", "subghz", "lfrfid", "ibutton",
+        "fatfs", "nanopb", "heatshrink", "microtar", "update_util",
+        "datetime", "bit_lib",
     }:
         env.AppendUnique(CCFLAGS=["-flto", "-ffat-lto-objects"])
         env.Replace(
