@@ -69,6 +69,21 @@ jobs:
           python firmware/site_scons/tools/tests/test_nfc_transport.py
           python firmware/site_scons/tools/tests/test_network_lifecycle.py
           python firmware/site_scons/tools/tests/test_hardware_policy.py
+          python firmware/site_scons/tools/tests/test_build_inputs.py
+      - name: Restore firmware dependency cache
+        id: firmware-deps
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/weave/deps
+          key: weave-firmware-deps-${{ runner.os }}-${{ hashFiles('.gitmodules', 'firmware/site_scons/tools/weave_deps.py') }}
+      - name: Fetch firmware dependencies
+        run: python firmware/site_scons/tools/weave_deps.py
+      - name: Save firmware dependency cache
+        if: steps.firmware-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/weave/deps
+          key: ${{ steps.firmware-deps.outputs.cache-primary-key }}
       - name: Build firmware only (no companion orchestration loop)
         run: python fbt.py build --firmware-only
       - name: Install and validate the generated SDK with uFBT

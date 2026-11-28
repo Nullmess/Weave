@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +49,34 @@ def ready(path):
 
 def run(cmd, cwd=None):
     subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def retry_git(args, *, cwd=None, label, cleanup=None):
+    """Retry only Git transport failures, with visible per-source diagnostics."""
+    command = ["git", "-c", "http.lowSpeedLimit=1024", "-c", "http.lowSpeedTime=60", *args]
+    for attempt in range(1, 4):
+        print(f"Weave : {label} ({attempt}/3)", flush=True)
+        try:
+            run(command, cwd=cwd)
+            return
+        except subprocess.CalledProcessError as error:
+            if attempt == 3:
+                raise RuntimeError(f"{label}: git exit {error.returncode} after 3 attempts") from error
+            print(f"Weave : {label}: git exit {error.returncode}; retrying", file=sys.stderr, flush=True)
+            if cleanup is not None:
+                cleanup()
+            time.sleep(2 ** attempt)
+
+
+def fetch_dependency(upstream, relative):
+    # Fetch only the dependencies requested by Weave. The ARM_CM4F kernel
+    # port is in the FreeRTOS repository itself; unrelated third-party
+    # ports are not required by the F7 firmware build.
+    args = ["submodule", "update", "--init"]
+    if relative.as_posix() != "lib/FreeRTOS-Kernel":
+        args.append("--recursive")
+    args.extend(["--jobs", "2", "--", relative.as_posix()])
+    retry_git(args, cwd=upstream, label=f"submodule {relative.as_posix()}")
 
 
 def is_link(path):
@@ -214,12 +243,13 @@ def bootstrap(missing):
     print("Weave : récupération des dépendances manquantes", flush=True)
     with tempfile.TemporaryDirectory(prefix=".fetch-", dir=CACHE) as folder:
         upstream = Path(folder) / "firmware"
-        run(["git", "clone", "--quiet", "--depth", "1", "--branch", ref,
-             url, str(upstream)])
-        run(["git", "submodule", "update", "--init", "--recursive",
-             "--jobs", "4"], cwd=upstream)
+        retry_git(["clone", "--quiet", "--depth", "1", "--branch", ref,
+                   url, str(upstream)], label=f"upstream {ref}",
+                  cleanup=lambda: shutil.rmtree(upstream) if upstream.exists() else None)
         for target in missing:
-            source = upstream / target.relative_to(ROOT)
+            relative = target.relative_to(ROOT)
+            fetch_dependency(upstream, relative)
+            source = upstream / relative
             if not ready(source):
                 raise RuntimeError(f"Dépendance absente : {source}")
             cached = cache_path(target)
