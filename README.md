@@ -33,8 +33,6 @@
 - Extended USB HID, CCID and Composite support.
 - Optimized cryptography and secure storage.
 - Application permissions and resource management.
-- Application-scoped software keystore and recoverable encrypted storage.
-- SDK capability discovery.
 - Native file, app and system management.
 - Android-assisted firmware updates over USB/Bluetooth.
 - Extended device controls and radio features.
@@ -79,21 +77,13 @@ ufbt update --hw-target=f7 --local=build/Weave-1.0.4-sdk.zip
 
 ---
 
+
 ## 🧑‍💻 Developer API
 
 SDK headers: [`<weave/weave.h>`](firmware/applications/services/weave/weave.h), [`<weave/weave_usb.h>`](firmware/applications/services/weave/weave_usb.h), [`<weave/weave_security.h>`](firmware/applications/services/weave/weave_security.h), [`<weave/weave_permissions.h>`](firmware/applications/services/weave/weave_permissions.h), [`<weave/weave_platform.h>`](firmware/applications/services/weave/weave_platform.h), [`<weave/weave_keystore.h>`](firmware/applications/services/weave/weave_keystore.h), [`<weave/weave_ble.h>`](firmware/applications/services/weave/weave_ble.h), [`<weave/weave_nfc.h>`](firmware/applications/services/weave/weave_nfc.h).
 
 | API | Function | Arguments | Return |
 |---|---|---|---|
-| NFC ISO-DEP | `weave_nfc_acquire` | `owner` | `WeaveNfcResult` |
-| NFC ISO-DEP | `weave_nfc_release` | `owner` | `WeaveNfcResult` |
-| NFC ISO-DEP | `weave_nfc_receive` | `owner, request, data, capacity` | `WeaveNfcResult` |
-| NFC ISO-DEP | `weave_nfc_respond` | `owner, id, data, size` | `WeaveNfcResult` |
-| BLE GATT | `weave_ble_acquire` | `owner, config` | `WeaveBleResult` |
-| BLE GATT | `weave_ble_release` | `owner` | `WeaveBleResult` |
-| BLE GATT | `weave_ble_state` | `owner, state` | `WeaveBleResult` |
-| BLE GATT | `weave_ble_receive` | `owner, connection, characteristic, data, capacity, size` | `WeaveBleResult` |
-| BLE GATT | `weave_ble_update` | `owner, connection, characteristic, data, size` | `WeaveBleResult` |
 | Networking | `weave_get_transport` | `weave` | `WeaveTransport` |
 | Networking | `weave_transport_subscribe` | `weave, cb, context` | `bool` |
 | Networking | `weave_transport_unsubscribe` | `weave, cb, context` | `void` |
@@ -118,6 +108,15 @@ SDK headers: [`<weave/weave.h>`](firmware/applications/services/weave/weave.h), 
 | USB | `weave_usb_ccid_notify` | `owner, present` | `WeaveUsbResult` |
 | USB | `weave_usb_connected` | `owner` | `bool` |
 | USB | `weave_usb_cdc_available` | — | `bool` |
+| BLE GATT | `weave_ble_acquire` | `owner, config` | `WeaveBleResult` |
+| BLE GATT | `weave_ble_release` | `owner` | `WeaveBleResult` |
+| BLE GATT | `weave_ble_state` | `owner, state` | `WeaveBleResult` |
+| BLE GATT | `weave_ble_receive` | `owner, connection, characteristic, data, capacity, size` | `WeaveBleResult` |
+| BLE GATT | `weave_ble_update` | `owner, connection, characteristic, data, size` | `WeaveBleResult` |
+| NFC ISO-DEP | `weave_nfc_acquire` | `owner` | `WeaveNfcResult` |
+| NFC ISO-DEP | `weave_nfc_release` | `owner` | `WeaveNfcResult` |
+| NFC ISO-DEP | `weave_nfc_receive` | `owner, request, data, capacity` | `WeaveNfcResult` |
+| NFC ISO-DEP | `weave_nfc_respond` | `owner, id, data, size` | `WeaveNfcResult` |
 | Security | `weave_security_random` | `out, size` | `bool` |
 | Security | `weave_security_wipe` | `data, size` | `void` |
 | Security | `weave_security_equal` | `a, b, size` | `bool` |
@@ -178,6 +177,8 @@ SDK headers: [`<weave/weave.h>`](firmware/applications/services/weave/weave.h), 
 | Keystore | `weave_keystore_derive` | `ns, name, algorithm, password, password_size, peer, peer_size, secret, secret_size` | `WeaveSecurityResult` |
 | Keystore | `weave_keystore_decrypt_oaep` | `ns, name, algorithm, password, password_size, label, label_size, input, input_size, output, capacity, output_size` | `WeaveSecurityResult` |
 | Keystore | `weave_keystore_delete` | `ns, name` | `WeaveSecurityResult` |
+
+Networking functions use `furi_record_open(RECORD_WEAVE)`; callbacks are asynchronous. Release callback contexts before unloading a FAP. See the linked headers for buffer sizes, permissions and lifecycle rules.
 
 ### Example
 

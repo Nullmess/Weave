@@ -73,8 +73,6 @@ void weave_queue_release_if_idle_locked(Weave* weave);
 void weave_callback_started_locked(Weave* weave, void* context, const char* appid);
 void weave_callback_finished(Weave* weave, void* context, const char* appid);
 void weave_flush_cleanup_locked(Weave* weave);
-bool weave_network_release_owner(Weave* weave, const char* appid, uint32_t timeout_ms);
-void weave_network_finish_owner(Weave* weave, const char* appid);
 void weave_gateway_attach(Weave* weave, WeaveTransport transport);
 bool weave_gateway_poll(Weave* weave, WeaveRequest* request);
 bool weave_gateway_active(Weave* weave, uint32_t id);

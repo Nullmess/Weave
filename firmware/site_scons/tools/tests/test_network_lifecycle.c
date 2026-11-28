@@ -1,4 +1,5 @@
 #include "weave_i.h"
+#include "weave_internal.h"
 #include "weave_permissions.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -27,5 +27,5 @@ uint32_t furi_ms_to_ticks(uint32_t);
 void furi_delay_ms(uint32_t);
 ''')
     exe=p/'test'
-    subprocess.run(['gcc','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-fno-sanitize-recover=all','-no-pie','-g','-I'+str(p),'-I'+str(SRC),str(HERE/'test_network_lifecycle.c'),str(SRC/'weave.c'),str(SRC/'weave_gateway.c'),'-o',str(exe)],check=True)
+    subprocess.run(['gcc','-D_POSIX_C_SOURCE=200809L','-std=c11','-Wall','-Wextra','-Werror','-Werror=redundant-decls','-fsanitize=address,undefined','-fno-sanitize-recover=all','-no-pie','-g','-I'+str(p),'-I'+str(SRC),str(HERE/'test_network_lifecycle.c'),str(SRC/'weave.c'),str(SRC/'weave_gateway.c'),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
