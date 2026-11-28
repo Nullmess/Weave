@@ -1,4 +1,6 @@
-#ifdef SRV_WEAVE
+/* HAL libraries are built before application-specific SRV_* defines.
+ * The updater does not use this profile. */
+#ifndef FURI_RAM_EXEC
 #include <weave/weave_ble_profile.h>
 #include <weave/weave_ble_queue.h>
 #include <furi.h>

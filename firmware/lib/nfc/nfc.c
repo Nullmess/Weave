@@ -256,14 +256,13 @@ Nfc* nfc_alloc(void) {
     return nfc_alloc_acquired();
 }
 
-#ifdef SRV_WEAVE
-/* Internal, caller must free on the same owner thread. */
+/* Internal library API, independent of application-specific SRV_* defines.
+ * Caller must free on the same owner thread. */
 extern bool furi_hal_nfc_try_acquire(uint32_t timeout);
 Nfc* nfc_try_alloc(uint32_t timeout) {
     if(!furi_hal_nfc_try_acquire(timeout)) return NULL;
     return nfc_alloc_acquired();
 }
-#endif
 
 void nfc_free(Nfc* instance) {
     furi_check(instance);

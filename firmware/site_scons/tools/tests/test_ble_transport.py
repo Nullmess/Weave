@@ -102,8 +102,14 @@ with tempfile.TemporaryDirectory(prefix='weave-ble-') as temp:
     for name,contents in HEADERS.items():
         p=base/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(contents)
     exe=base/'test'
-    subprocess.run(['gcc','-DSRV_WEAVE','-std=c11','-Wall','-Wextra','-Werror','-O1','-g','-no-pie',
+    flags=['gcc','-std=c11','-Wall','-Wextra','-Werror','-Wredundant-decls','-O1','-g',
         '-fsanitize=address,undefined','-fno-sanitize-recover=all','-I',str(base),'-I',str(SRC),
-        '-I',str(ROOT/'applications/services'),str(SRC/'weave_ble.c'),str(SRC/'weave_ble_queue.c'),
-        str(ROOT/'targets/f7/ble_glue/profiles/weave_profile.c'),str(HERE/'test_ble_transport.c'),'-o',str(exe)],check=True)
+        '-I',str(ROOT/'applications/services')]
+    # Match SCons: target library is built without application SRV_* defines.
+    profile=base/'profile.o'
+    archive=base/'libtarget.a'
+    subprocess.run(flags+['-c',str(ROOT/'targets/f7/ble_glue/profiles/weave_profile.c'),'-o',str(profile)],check=True)
+    subprocess.run(['ar','rcs',str(archive),str(profile)],check=True)
+    subprocess.run(flags+['-DSRV_WEAVE','-no-pie',str(SRC/'weave_ble.c'),str(SRC/'weave_ble_queue.c'),
+        str(HERE/'test_ble_transport.c'),str(archive),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
