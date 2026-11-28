@@ -1,5 +1,6 @@
 #include <furi.h>
 #include <stdio.h>
+#include "app_common.h"
 #include <ble/ble.h>
 #include <furi_ble/event_dispatcher.h>
 #include <bt/bt_service/bt.h>

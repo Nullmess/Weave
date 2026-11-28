@@ -4,6 +4,7 @@
 #include <weave/weave_ble_profile.h>
 #include <weave/weave_ble_queue.h>
 #include <furi.h>
+#include "app_common.h"
 #include <ble/ble.h>
 #include <furi_ble/event_dispatcher.h>
 #include <furi_ble/gatt.h>

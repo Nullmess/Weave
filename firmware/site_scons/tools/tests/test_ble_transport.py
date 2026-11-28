@@ -62,6 +62,13 @@ typedef struct GapEventHandler GapSvcEventHandler;
 GapSvcEventHandler* ble_event_dispatcher_register_svc_handler(BleSvcEventHandlerCb,void*);
 void ble_event_dispatcher_unregister_svc_handler(GapSvcEventHandler*);
 ''',
+# Match STM32WB: HCI transport types come via app_common.h, not ble/ble.h.
+'app_common.h':r'''#pragma once
+#include <stdint.h>
+typedef struct __attribute__((packed)) {uint8_t type;uint8_t data[];} hci_uart_pckt;
+typedef struct __attribute__((packed)) {uint8_t evt,plen;uint8_t data[];} hci_event_pckt;
+typedef struct __attribute__((packed)) {uint16_t ecode;uint8_t data[];} evt_blecore_aci;
+''',
 'ble/ble.h':r'''#pragma once
 #include <stdint.h>
 #define UUID_TYPE_16 1
@@ -82,9 +89,6 @@ void ble_event_dispatcher_unregister_svc_handler(GapSvcEventHandler*);
 typedef uint8_t tBleStatus;
 typedef union {uint16_t uuid16;uint8_t uuid128[16];} Service_UUID_t;
 typedef Service_UUID_t Char_UUID_t;
-typedef struct __attribute__((packed)) {uint8_t type;uint8_t data[];} hci_uart_pckt;
-typedef struct __attribute__((packed)) {uint8_t evt,plen;uint8_t data[];} hci_event_pckt;
-typedef struct __attribute__((packed)) {uint16_t ecode;uint8_t data[];} evt_blecore_aci;
 typedef struct __attribute__((packed)) {uint16_t Connection_Handle,Attr_Handle,Offset,Attr_Data_Length;uint8_t Attr_Data[];} aci_gatt_attribute_modified_event_rp0;
 tBleStatus aci_gatt_add_char(uint16_t,uint8_t,const Char_UUID_t*,uint16_t,uint8_t,uint8_t,uint8_t,uint8_t,uint8_t,uint16_t*);
 tBleStatus aci_gatt_update_char_value(uint16_t,uint16_t,uint8_t,uint8_t,const uint8_t*);
